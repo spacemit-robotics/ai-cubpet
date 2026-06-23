@@ -1,0 +1,14 @@
+AI Cubpet Native Demo
+Copyright (C) 2026 SpacemiT (Hangzhou) Technology Co. Ltd.
+
+This product includes software developed by SpacemiT and may link to the
+following third-party or SDK components when the local voice demo is enabled:
+
+- WebRTC Audio Processing for acoustic echo cancellation.
+- ONNX Runtime for local model inference.
+- PortAudio and libsndfile for audio I/O support through the SDK audio package.
+- FFTW3 for audio processing dependencies.
+- libcurl for model and runtime support used by SDK components.
+- Silero VAD model/runtime through the SDK VAD package.
+
+See LICENSE and the dependency packages for their respective license terms.

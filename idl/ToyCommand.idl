@@ -1,0 +1,28 @@
+module ToyCommand
+{
+    enum CommandType
+    {
+        SHORT_TOUCH,
+        LONG_TOUCH,
+        THROW_TOY,
+        AWAKE_MODE,
+        SLEEP_MODE,
+        CUSTOM_MEDIA,
+        LEFT_FOOT_SHORT_TOUCH,
+        LEFT_FOOT_LONG_TOUCH,
+        RIGHT_FOOT_SHORT_TOUCH,
+        RIGHT_FOOT_LONG_TOUCH,
+        NOSE_SHORT_TOUCH,
+        NOSE_LONG_TOUCH
+    };
+
+    @extensibility(APPENDABLE)
+    struct Msg
+    {
+        CommandType command;
+        float touchValue;
+        string audioFile;
+        string gifFile;
+        long long timestamp;
+    };
+};

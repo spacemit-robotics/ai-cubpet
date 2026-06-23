@@ -2,16 +2,34 @@
 <package format="3">
   <name>ai-cubpet</name>
   <version>0.1.0</version>
-  <description>AI Cubpet native application that aggregates peripheral driver demos.</description>
+  <description>AI Cubpet native application with a local voice-control demo.</description>
   <maintainer email="dev@spacemit.com">Spacemit Robotics</maintainer>
   <license>Apache-2.0</license>
 
-  <depend>components/peripherals/misc_io</depend>
-  <depend>components/peripherals/pm</depend>
-  <depend>components/peripherals/wifi</depend>
-  <depend>components/peripherals/nfc</depend>
-  <depend>components/peripherals/motor</depend>
-  <depend>components/peripherals/light_sensor</depend>
+  <depend>audio</depend>
+  <depend>audio_process</depend>
+  <depend>asr</depend>
+  <depend>motor</depend>
+  <depend>vad</depend>
+
+  <system_depend check="pkg-config --exists libgpiod">libgpiod-dev</system_depend>
+  <system_depend check="git --version">git</system_depend>
+  <system_depend check="pkg-config --exists portaudio-2.0">portaudio19-dev</system_depend>
+  <system_depend check="pkg-config --exists sndfile">libsndfile1-dev</system_depend>
+  <system_depend check="pkg-config --exists fftw3f">libfftw3-dev</system_depend>
+  <system_depend check="pkg-config --exists samplerate">libsamplerate0-dev</system_depend>
+  <system_depend check="pkg-config --exists libcurl">libcurl4-openssl-dev</system_depend>
+  <system_depend check="pkg-config --exists libssl">libssl-dev</system_depend>
+  <system_depend check="test -f /usr/include/nlohmann/json.hpp || pkg-config --exists nlohmann_json">nlohmann-json3-dev</system_depend>
+  <system_depend check="pkg-config --exists Qt5Core">qtbase5-gles-dev</system_depend>
+  <system_depend check="pkg-config --exists Qt5Gui">qtbase5-gles-dev</system_depend>
+  <system_depend check="pkg-config --exists Qt5Widgets">qtbase5-gles-dev</system_depend>
+  <system_depend check="pkg-config --exists Qt5Multimedia">qtmultimedia5-dev</system_depend>
+  <system_depend check="dpkg-query -W -f='${Status}' libqt5multimedia5-plugins 2>/dev/null | grep -q 'install ok installed'">libqt5multimedia5-plugins</system_depend>
+  <system_depend arch="riscv64" check="test -f /usr/include/onnxruntime_cxx_api.h">spacemit-onnxruntime</system_depend>
+  <system_depend arch="riscv64">python3-spacemit-ort</system_depend>
+  <system_depend check="meson --version">meson</system_depend>
+  <system_depend check="ninja --version">ninja-build</system_depend>
 
   <buildtool_depend>cmake</buildtool_depend>
 
