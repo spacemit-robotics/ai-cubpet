@@ -12,6 +12,8 @@
 #endif
 
 #include "asr_service.h"
+#include "audio_base.hpp"
+#include "audio_duplex.hpp"
 #include "audio_resampler.hpp"
 #include "vad_service.h"
 #ifdef AI_CUBPET_USE_WEBRTC_AEC
@@ -41,6 +43,10 @@
 #include <utility>
 #include <vector>
 
+#include <limits.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
 namespace ai_cubpet {
 namespace {
 
@@ -48,6 +54,8 @@ constexpr int kModelSampleRate = 16000;
 constexpr int kDefaultCaptureRate = 48000;
 constexpr int kDefaultCaptureChannels = 2;
 constexpr int kDefaultFramesPerBuffer = 480;
+constexpr int kPlaybackSampleRate = 16000;
+constexpr int kPlaybackChannels = 2;
 constexpr size_t kVadFrameSize = 512;
 
 std::atomic<bool> g_running{true};
@@ -130,6 +138,8 @@ bool ParseNoiseSuppressionLevel(const std::string& value, int* out)
 struct VoiceDemoOptions {
     int input_device = -1;
     std::vector<std::string> input_device_hints = {"SPV Composite", "USB Audio"};
+    int output_device = -1;
+    std::vector<std::string> output_device_hints = {"SPV Composite", "USB Audio"};
     int capture_rate = kDefaultCaptureRate;
     int capture_channels = kDefaultCaptureChannels;
     int speech_channel = 1;
@@ -169,6 +179,14 @@ struct VoiceDemoOptions {
     float agc_max_output_noise_level_dbfs = -50.0f;
     bool warmup = true;
     bool list_devices = false;
+    bool enable_playback = true;
+    std::string audio_dir;
+    std::string test_playback_file;
+    int test_playback_count = 1;
+    int test_playback_interval_ms = 3000;
+    std::string test_intent_name;
+    int test_intent_count = 1;
+    int test_intent_interval_ms = 3000;
     std::string save_wav;
     std::string save_raw_wav;
 };
@@ -177,10 +195,21 @@ void PrintUsage(const char* argv0)
 {
     std::cout
         << "Usage: " << argv0 << " [options]\n"
-        << "  -l, --list-devices          List input devices\n"
+        << "  -l, --list-devices          List input/output devices\n"
         << "  -i, --input <N>             Input device index (-1 default)\n"
         << "  --input-device-hint <TEXT>  Prefer input device whose name contains TEXT\n"
         << "  --clear-input-device-hints  Disable built-in input device hints\n"
+        << "  -o, --output <N>            Output device index (-1 default)\n"
+        << "  --output-device-hint <TEXT> Prefer output device whose name contains TEXT\n"
+        << "  --clear-output-device-hints Disable built-in output device hints\n"
+        << "  --audio-dir <DIR>           Audio asset directory\n"
+        << "  --no-playback               Disable local intent audio playback\n"
+        << "  --test-playback <WAV>       Enqueue one WAV after audio starts\n"
+        << "  --test-playback-count <N>   Repeat --test-playback N times\n"
+        << "  --test-playback-interval-ms <N> Delay between repeated test playbacks\n"
+        << "  --test-intent <NAME>        Queue one intent after audio starts\n"
+        << "  --test-intent-count <N>     Repeat --test-intent N times\n"
+        << "  --test-intent-interval-ms <N> Delay between repeated test intents\n"
         << "  -t, --time <sec>            Capture duration (0 = until Ctrl+C)\n"
         << "  --rate <hz>                 Capture rate (default 48000)\n"
         << "  --channels <N>              Capture channels (default 2)\n"
@@ -222,13 +251,23 @@ void PrintUsage(const char* argv0)
 void ListDevices()
 {
     std::cout << "Input devices:" << std::endl;
-    auto devices = AudioPipeline::ListInputDevices();
-    if (devices.empty()) {
+    auto input_devices = AudioPipeline::ListInputDevices();
+    if (input_devices.empty()) {
         std::cout << "  (none)" << std::endl;
-        return;
+    } else {
+        for (const auto& dev : input_devices) {
+            std::cout << "  [" << dev.first << "] " << dev.second << std::endl;
+        }
     }
-    for (const auto& dev : devices) {
-        std::cout << "  [" << dev.first << "] " << dev.second << std::endl;
+
+    std::cout << "Output devices:" << std::endl;
+    auto output_devices = SpacemitAudio::AudioDuplex::ListOutputDevices();
+    if (output_devices.empty()) {
+        std::cout << "  (none)" << std::endl;
+    } else {
+        for (const auto& dev : output_devices) {
+            std::cout << "  [" << dev.first << "] " << dev.second << std::endl;
+        }
     }
 }
 
@@ -282,6 +321,360 @@ bool ResolveInputDeviceByHints(VoiceDemoOptions* options)
         }
     }
     return false;
+}
+
+bool ResolveOutputDeviceByHints(VoiceDemoOptions* options)
+{
+    if (!options || options->output_device >= 0 || options->output_device_hints.empty()) {
+        return true;
+    }
+
+    const auto devices = SpacemitAudio::AudioDuplex::ListOutputDevices();
+    for (const auto& hint : options->output_device_hints) {
+        for (const auto& dev : devices) {
+            if (ContainsCaseInsensitive(dev.second, hint)) {
+                options->output_device = dev.first;
+                std::cout << Timestamp() << " selected output device ["
+                        << dev.first << "] " << dev.second
+                        << " by hint \"" << hint << "\"" << std::endl;
+                return true;
+            }
+        }
+    }
+
+    std::cerr << Timestamp()
+            << " [playback] output device hints did not match; using default output"
+            << std::endl;
+    if (devices.empty()) {
+        std::cerr << "visible output devices: (none)" << std::endl;
+    } else {
+        std::cerr << "visible output devices:" << std::endl;
+        for (const auto& dev : devices) {
+            std::cerr << "  [" << dev.first << "] " << dev.second << std::endl;
+        }
+    }
+    return true;
+}
+
+std::string EnvOrEmpty(const char* name)
+{
+    const char* value = std::getenv(name);
+    return value && value[0] != '\0' ? std::string(value) : std::string();
+}
+
+std::string ExpandUserPath(const std::string& path)
+{
+    if (path.empty() || path[0] != '~') {
+        return path;
+    }
+    if (path.size() > 1 && path[1] != '/') {
+        return path;
+    }
+    const std::string home = EnvOrEmpty("HOME");
+    if (home.empty()) {
+        return path;
+    }
+    return home + path.substr(1);
+}
+
+bool IsAbsolutePath(const std::string& path)
+{
+    return !path.empty() && path[0] == '/';
+}
+
+std::string PathJoin(const std::string& base, const std::string& name)
+{
+    if (base.empty()) {
+        return name;
+    }
+    if (name.empty()) {
+        return base;
+    }
+    if (IsAbsolutePath(name)) {
+        return name;
+    }
+    if (base.back() == '/') {
+        return base + name;
+    }
+    return base + "/" + name;
+}
+
+bool DirectoryExists(const std::string& path)
+{
+    struct stat st {};
+    return !path.empty() && stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+std::string ExecutableDir()
+{
+    std::vector<char> buffer(PATH_MAX + 1, '\0');
+    const ssize_t n = readlink("/proc/self/exe", buffer.data(), PATH_MAX);
+    if (n <= 0) {
+        return "";
+    }
+    buffer[static_cast<size_t>(n)] = '\0';
+    std::string exe(buffer.data());
+    const size_t slash = exe.find_last_of('/');
+    if (slash == std::string::npos) {
+        return "";
+    }
+    return exe.substr(0, slash);
+}
+
+std::string ResolveAudioDir(const VoiceDemoOptions& options)
+{
+    std::vector<std::string> candidates;
+    candidates.push_back(options.audio_dir);
+    candidates.push_back(EnvOrEmpty("AI_CUBPET_AUDIO_DIR"));
+    candidates.push_back(EnvOrEmpty("AUDIO_PATH"));
+
+    const std::string asset_root = EnvOrEmpty("AI_CUBPET_ASSET_ROOT");
+    if (!asset_root.empty()) {
+        candidates.push_back(PathJoin(asset_root, "audio"));
+    }
+
+    const std::string exe_dir = ExecutableDir();
+    if (!exe_dir.empty()) {
+        candidates.push_back(PathJoin(exe_dir, "../share/ai-cubpet/audio"));
+    }
+
+    const std::string xdg_cache = EnvOrEmpty("XDG_CACHE_HOME");
+    if (!xdg_cache.empty()) {
+        candidates.push_back(PathJoin(xdg_cache, "models/assets/audio"));
+    }
+
+    const std::string home = EnvOrEmpty("HOME");
+    if (!home.empty()) {
+        candidates.push_back(PathJoin(home, ".cache/models/assets/audio"));
+    }
+    candidates.push_back("/root/.cache/models/assets/audio");
+
+    std::string fallback;
+    for (const auto& raw : candidates) {
+        if (raw.empty()) {
+            continue;
+        }
+        const std::string path = ExpandUserPath(raw);
+        if (fallback.empty()) {
+            fallback = path;
+        }
+        if (DirectoryExists(path)) {
+            return path;
+        }
+    }
+    return fallback;
+}
+
+std::string ResolveAudioPath(const std::string& file, const std::string& audio_dir)
+{
+    if (file.empty()) {
+        return "";
+    }
+    const std::string expanded = ExpandUserPath(file);
+    if (IsAbsolutePath(expanded)) {
+        return expanded;
+    }
+    return PathJoin(audio_dir, expanded);
+}
+
+VoiceIntent VoiceIntentFromName(const std::string& name)
+{
+    if (name == "head_up") {
+        return VoiceIntent::kHeadUp;
+    }
+    if (name == "nod_head") {
+        return VoiceIntent::kNodHead;
+    }
+    if (name == "shake_head") {
+        return VoiceIntent::kShakeHead;
+    }
+    if (name == "wag_tail") {
+        return VoiceIntent::kWagTail;
+    }
+    return VoiceIntent::kUnknown;
+}
+
+struct WavPcm16 {
+    int sample_rate = 0;
+    int channels = 0;
+    std::vector<int16_t> samples;
+};
+
+bool ReadExact(std::ifstream& file, char* data, size_t size)
+{
+    file.read(data, static_cast<std::streamsize>(size));
+    return file.gcount() == static_cast<std::streamsize>(size);
+}
+
+bool ReadWavPcm16(const std::string& path, WavPcm16* wav)
+{
+    if (!wav) {
+        return false;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        std::cerr << "[playback] cannot open WAV: " << path << std::endl;
+        return false;
+    }
+
+    char riff[4] = {};
+    uint32_t riff_size = 0;
+    char wave[4] = {};
+    if (!ReadExact(file, riff, sizeof(riff)) ||
+            !ReadExact(file, reinterpret_cast<char*>(&riff_size), sizeof(riff_size)) ||
+            !ReadExact(file, wave, sizeof(wave)) ||
+            std::memcmp(riff, "RIFF", 4) != 0 ||
+            std::memcmp(wave, "WAVE", 4) != 0) {
+        std::cerr << "[playback] invalid WAV header: " << path << std::endl;
+        return false;
+    }
+    (void)riff_size;
+
+    bool have_fmt = false;
+    bool have_data = false;
+    uint16_t audio_format = 0;
+    uint16_t channels = 0;
+    uint32_t sample_rate = 0;
+    uint16_t bits_per_sample = 0;
+    std::vector<int16_t> samples;
+
+    while (file) {
+        char chunk_id[4] = {};
+        uint32_t chunk_size = 0;
+        if (!ReadExact(file, chunk_id, sizeof(chunk_id))) {
+            break;
+        }
+        if (!ReadExact(file, reinterpret_cast<char*>(&chunk_size), sizeof(chunk_size))) {
+            break;
+        }
+
+        if (std::memcmp(chunk_id, "fmt ", 4) == 0) {
+            if (chunk_size < 16) {
+                std::cerr << "[playback] invalid WAV fmt chunk: " << path << std::endl;
+                return false;
+            }
+            uint32_t byte_rate = 0;
+            uint16_t block_align = 0;
+            if (!ReadExact(file, reinterpret_cast<char*>(&audio_format), sizeof(audio_format)) ||
+                    !ReadExact(file, reinterpret_cast<char*>(&channels), sizeof(channels)) ||
+                    !ReadExact(file, reinterpret_cast<char*>(&sample_rate), sizeof(sample_rate)) ||
+                    !ReadExact(file, reinterpret_cast<char*>(&byte_rate), sizeof(byte_rate)) ||
+                    !ReadExact(file, reinterpret_cast<char*>(&block_align), sizeof(block_align)) ||
+                    !ReadExact(file, reinterpret_cast<char*>(&bits_per_sample), sizeof(bits_per_sample))) {
+                std::cerr << "[playback] truncated WAV fmt chunk: " << path << std::endl;
+                return false;
+            }
+            (void)byte_rate;
+            (void)block_align;
+            if (chunk_size > 16) {
+                file.seekg(static_cast<std::streamoff>(chunk_size - 16), std::ios::cur);
+            }
+            have_fmt = true;
+        } else if (std::memcmp(chunk_id, "data", 4) == 0) {
+            const uint32_t sample_bytes =
+                chunk_size - (chunk_size % sizeof(int16_t));
+            if (sample_bytes == 0) {
+                std::cerr << "[playback] invalid WAV data chunk: " << path << std::endl;
+                return false;
+            }
+            samples.resize(sample_bytes / sizeof(int16_t));
+            if (!ReadExact(file,
+                    reinterpret_cast<char*>(samples.data()),
+                    sample_bytes)) {
+                std::cerr << "[playback] truncated WAV data chunk: " << path << std::endl;
+                return false;
+            }
+            if (sample_bytes < chunk_size) {
+                file.seekg(static_cast<std::streamoff>(chunk_size - sample_bytes),
+                    std::ios::cur);
+            }
+            have_data = true;
+        } else {
+            file.seekg(static_cast<std::streamoff>(chunk_size), std::ios::cur);
+        }
+
+        if (chunk_size % 2 == 1) {
+            file.seekg(1, std::ios::cur);
+        }
+        if (have_fmt && have_data) {
+            break;
+        }
+    }
+
+    if (!have_fmt || !have_data || audio_format != 1 || bits_per_sample != 16 ||
+            channels == 0 || sample_rate == 0 || samples.empty()) {
+        std::cerr << "[playback] unsupported WAV, need PCM16: " << path << std::endl;
+        return false;
+    }
+
+    wav->sample_rate = static_cast<int>(sample_rate);
+    wav->channels = static_cast<int>(channels);
+    wav->samples = std::move(samples);
+    return true;
+}
+
+std::vector<float> Pcm16ToStereoFloat(const WavPcm16& wav)
+{
+    if (wav.channels <= 0) {
+        return {};
+    }
+    const size_t frames = wav.samples.size() / static_cast<size_t>(wav.channels);
+    std::vector<float> stereo(frames * kPlaybackChannels);
+    for (size_t i = 0; i < frames; ++i) {
+        const size_t in_base = i * static_cast<size_t>(wav.channels);
+        const float left = static_cast<float>(wav.samples[in_base]) / 32768.0f;
+        const float right = wav.channels > 1
+            ? static_cast<float>(wav.samples[in_base + 1]) / 32768.0f
+            : left;
+        stereo[i * kPlaybackChannels] = left;
+        stereo[i * kPlaybackChannels + 1] = right;
+    }
+    return stereo;
+}
+
+bool LoadWavForDuplexPlayback(const std::string& path,
+                            int target_sample_rate,
+                            std::vector<float>* samples)
+{
+    if (!samples || target_sample_rate <= 0) {
+        return false;
+    }
+    samples->clear();
+
+    WavPcm16 wav;
+    if (!ReadWavPcm16(path, &wav)) {
+        return false;
+    }
+
+    std::vector<float> stereo = Pcm16ToStereoFloat(wav);
+    if (stereo.empty()) {
+        std::cerr << "[playback] empty WAV: " << path << std::endl;
+        return false;
+    }
+
+    if (wav.sample_rate != target_sample_rate) {
+        Resampler::Config config;
+        config.input_sample_rate = wav.sample_rate;
+        config.output_sample_rate = target_sample_rate;
+        config.channels = kPlaybackChannels;
+        config.method = wav.sample_rate > target_sample_rate
+            ? ResampleMethod::LINEAR_DOWNSAMPLE
+            : ResampleMethod::LINEAR_UPSAMPLE;
+        Resampler resampler(config);
+        if (!resampler.initialize()) {
+            std::cerr << "[playback] failed to initialize resampler: "
+                    << wav.sample_rate << " -> " << target_sample_rate << std::endl;
+            return false;
+        }
+        stereo = resampler.process(stereo);
+        if (stereo.empty()) {
+            std::cerr << "[playback] resampler produced no output: " << path << std::endl;
+            return false;
+        }
+    }
+
+    *samples = std::move(stereo);
+    return !samples->empty();
 }
 
 bool SaveWavMono16(const std::string& path,
@@ -504,6 +897,474 @@ private:
     size_t dropped_ = 0;
 };
 
+struct DuplexAudioConfig {
+    int sample_rate = 16000;
+    int capture_channels = 4;
+    int playback_channels = 2;
+    int frames_per_buffer = 480;
+    int input_device = -1;
+    int output_device = -1;
+};
+
+std::vector<float> NormalizePlaybackChannels(
+    const std::vector<float>& interleaved,
+    int channels,
+    int output_channels)
+{
+    if (interleaved.empty() || channels <= 0 || output_channels <= 0) {
+        return {};
+    }
+
+    const size_t frames = interleaved.size() / static_cast<size_t>(channels);
+    std::vector<float> normalized(frames * static_cast<size_t>(output_channels));
+    for (size_t frame = 0; frame < frames; ++frame) {
+        for (int ch = 0; ch < output_channels; ++ch) {
+            float sample = 0.0f;
+            if (channels == 1) {
+                sample = interleaved[frame];
+            } else {
+                const int src_ch = std::min(ch, channels - 1);
+                sample = interleaved[frame * static_cast<size_t>(channels) +
+                    static_cast<size_t>(src_ch)];
+            }
+            normalized[frame * static_cast<size_t>(output_channels) +
+                static_cast<size_t>(ch)] = std::clamp(sample, -1.0f, 1.0f);
+        }
+    }
+    return normalized;
+}
+
+std::vector<int16_t> FloatToPcm16(const std::vector<float>& samples)
+{
+    std::vector<int16_t> pcm(samples.size());
+    for (size_t i = 0; i < samples.size(); ++i) {
+        const float clamped = std::clamp(samples[i], -1.0f, 1.0f);
+        pcm[i] = static_cast<int16_t>(std::lround(clamped * 32767.0f));
+    }
+    return pcm;
+}
+
+class DuplexAudioPipeline {
+public:
+    using CaptureCallback = std::function<void(const int16_t* interleaved,
+                                            size_t frames,
+                                            int channels)>;
+
+    explicit DuplexAudioPipeline(DuplexAudioConfig config)
+        : config_(config)
+    {
+    }
+
+    ~DuplexAudioPipeline()
+    {
+        Close();
+    }
+
+    bool Initialize()
+    {
+        if (config_.sample_rate <= 0 || config_.capture_channels <= 0 ||
+                config_.playback_channels <= 0 || config_.frames_per_buffer <= 0) {
+            std::cerr << "[audio-duplex] invalid config" << std::endl;
+            return false;
+        }
+
+        capture_slot_samples_ = static_cast<size_t>(config_.frames_per_buffer) *
+            static_cast<size_t>(config_.capture_channels);
+        capture_ring_.assign(kCaptureRingChunks * capture_slot_samples_, 0);
+        capture_frame_counts_.assign(kCaptureRingChunks, 0);
+        capture_channel_counts_.assign(kCaptureRingChunks, 0);
+        capture_write_.store(0);
+        capture_read_.store(0);
+        capture_dropped_.store(0);
+
+        duplex_ = std::make_unique<SpacemitAudio::AudioDuplex>(
+            config_.input_device, config_.output_device);
+        duplex_->SetCallbackEx([this](const float* input,
+                                    float* output,
+                                    size_t frames,
+                                    int input_channels,
+                                    int output_channels) {
+            OnAudio(input, output, frames, input_channels, output_channels);
+        });
+
+        initialized_ = true;
+        std::cout << "[audio-duplex] init: sample_rate=" << config_.sample_rate
+                << ", capture_channels=" << config_.capture_channels
+                << ", playback_channels=" << config_.playback_channels
+                << ", frames_per_buffer=" << config_.frames_per_buffer
+                << ", input_device=" << config_.input_device
+                << ", output_device=" << config_.output_device
+                << std::endl;
+        return true;
+    }
+
+    void SetCaptureCallback(CaptureCallback callback)
+    {
+        callback_ = std::move(callback);
+    }
+
+    bool Start()
+    {
+        if (!initialized_ || !duplex_) {
+            return false;
+        }
+        if (!callback_) {
+            std::cerr << "[audio-duplex] capture callback is not set" << std::endl;
+            return false;
+        }
+        processing_running_ = true;
+        capture_thread_ = std::thread(&DuplexAudioPipeline::CaptureLoop, this);
+        if (!duplex_->Start(config_.sample_rate, config_.capture_channels,
+                config_.playback_channels, config_.frames_per_buffer)) {
+            std::cerr << "[audio-duplex] failed to start" << std::endl;
+            processing_running_ = false;
+            if (capture_thread_.joinable()) {
+                capture_thread_.join();
+            }
+            return false;
+        }
+        running_ = true;
+        std::cout << "[audio-duplex] started" << std::endl;
+        return true;
+    }
+
+    void Stop()
+    {
+        const bool was_running = running_;
+        if (running_ && duplex_) {
+            duplex_->Stop();
+        }
+        running_ = false;
+        processing_running_ = false;
+        if (capture_thread_.joinable()) {
+            capture_thread_.join();
+        }
+        if (was_running) {
+            std::cout << "[audio-duplex] stopped" << std::endl;
+        }
+    }
+
+    void Close()
+    {
+        Stop();
+        if (duplex_) {
+            duplex_->Close();
+            duplex_.reset();
+        }
+        initialized_ = false;
+    }
+
+    void EnqueuePlayback(std::vector<float> interleaved, int channels)
+    {
+        if (interleaved.empty() || channels <= 0) {
+            return;
+        }
+        std::vector<float> normalized =
+            NormalizePlaybackChannels(interleaved, channels, config_.playback_channels);
+        if (normalized.empty()) {
+            return;
+        }
+
+        std::lock_guard<std::mutex> lock(pending_playback_mutex_);
+        if (!pending_playback_.empty()) {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+        pending_playback_ = std::move(normalized);
+        pending_playback_frames_ =
+            pending_playback_.size() / static_cast<size_t>(config_.playback_channels);
+    }
+
+    bool is_playing() const
+    {
+        std::lock_guard<std::mutex> lock(playback_mutex_);
+        return is_playing_;
+    }
+
+    size_t dropped() const
+    {
+        return dropped_.load(std::memory_order_relaxed);
+    }
+
+    int sample_rate() const { return config_.sample_rate; }
+
+private:
+    void PullPendingPlaybackLocked()
+    {
+        std::unique_lock<std::mutex> lock(pending_playback_mutex_, std::try_to_lock);
+        if (!lock.owns_lock() || pending_playback_.empty()) {
+            return;
+        }
+        if (!playback_.empty() && playback_pos_frames_ < playback_frames_) {
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+        playback_ = std::move(pending_playback_);
+        playback_frames_ = pending_playback_frames_;
+        playback_pos_frames_ = 0;
+        pending_playback_frames_ = 0;
+        is_playing_ = playback_frames_ > 0;
+    }
+
+    void FillOutput(float* output, size_t frames, int output_channels)
+    {
+        if (!output || frames == 0 || output_channels <= 0) {
+            return;
+        }
+        std::fill(output, output + frames * static_cast<size_t>(output_channels), 0.0f);
+
+        std::unique_lock<std::mutex> lock(playback_mutex_, std::try_to_lock);
+        if (!lock.owns_lock()) {
+            return;
+        }
+        PullPendingPlaybackLocked();
+        if (playback_.empty() || playback_pos_frames_ >= playback_frames_) {
+            is_playing_ = false;
+            return;
+        }
+
+        const size_t frames_available = playback_frames_ - playback_pos_frames_;
+        const size_t frames_to_copy = std::min(frames, frames_available);
+        for (size_t frame = 0; frame < frames_to_copy; ++frame) {
+            const size_t src_base = (playback_pos_frames_ + frame) *
+                static_cast<size_t>(config_.playback_channels);
+            const size_t dst_base = frame * static_cast<size_t>(output_channels);
+            for (int ch = 0; ch < output_channels; ++ch) {
+                const int src_ch = std::min(ch, config_.playback_channels - 1);
+                output[dst_base + static_cast<size_t>(ch)] =
+                    playback_[src_base + static_cast<size_t>(src_ch)];
+            }
+        }
+
+        playback_pos_frames_ += frames_to_copy;
+        if (playback_pos_frames_ >= playback_frames_) {
+            playback_.clear();
+            playback_frames_ = 0;
+            playback_pos_frames_ = 0;
+            is_playing_ = false;
+        } else {
+            is_playing_ = true;
+        }
+    }
+
+    void QueueInput(const float* input, size_t frames, int input_channels)
+    {
+        if (!input || frames == 0 || input_channels <= 0 || capture_slot_samples_ == 0) {
+            return;
+        }
+        const size_t samples = frames * static_cast<size_t>(input_channels);
+        if (samples > capture_slot_samples_) {
+            capture_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        const size_t write = capture_write_.load(std::memory_order_relaxed);
+        const size_t next = (write + 1) % kCaptureRingChunks;
+        if (next == capture_read_.load(std::memory_order_acquire)) {
+            capture_dropped_.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+
+        int16_t* slot = capture_ring_.data() + write * capture_slot_samples_;
+        for (size_t i = 0; i < samples; ++i) {
+            const float clamped = std::clamp(input[i], -1.0f, 1.0f);
+            slot[i] = static_cast<int16_t>(clamped * 32767.0f);
+        }
+        capture_frame_counts_[write] = frames;
+        capture_channel_counts_[write] = input_channels;
+        capture_write_.store(next, std::memory_order_release);
+    }
+
+    void CaptureLoop()
+    {
+        while (processing_running_.load(std::memory_order_acquire) ||
+                capture_read_.load(std::memory_order_acquire) !=
+                    capture_write_.load(std::memory_order_acquire)) {
+            const size_t read = capture_read_.load(std::memory_order_relaxed);
+            if (read == capture_write_.load(std::memory_order_acquire)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                continue;
+            }
+
+            const size_t frames = capture_frame_counts_[read];
+            const int channels = capture_channel_counts_[read];
+            const int16_t* slot = capture_ring_.data() + read * capture_slot_samples_;
+            if (callback_ && frames > 0 && channels > 0) {
+                callback_(slot, frames, channels);
+            }
+            capture_read_.store((read + 1) % kCaptureRingChunks,
+                std::memory_order_release);
+        }
+    }
+
+    void OnAudio(const float* input,
+                float* output,
+                size_t frames,
+                int input_channels,
+                int output_channels)
+    {
+        FillOutput(output, frames, output_channels);
+        QueueInput(input, frames, input_channels);
+    }
+
+    static constexpr size_t kCaptureRingChunks = 128;
+
+    DuplexAudioConfig config_;
+    std::unique_ptr<SpacemitAudio::AudioDuplex> duplex_;
+    CaptureCallback callback_;
+    std::thread capture_thread_;
+    std::atomic<bool> processing_running_{false};
+    std::vector<int16_t> capture_ring_;
+    std::vector<size_t> capture_frame_counts_;
+    std::vector<int> capture_channel_counts_;
+    size_t capture_slot_samples_ = 0;
+    std::atomic<size_t> capture_write_{0};
+    std::atomic<size_t> capture_read_{0};
+    std::atomic<size_t> capture_dropped_{0};
+    mutable std::mutex playback_mutex_;
+    std::vector<float> playback_;
+    size_t playback_frames_ = 0;
+    size_t playback_pos_frames_ = 0;
+    std::mutex pending_playback_mutex_;
+    std::vector<float> pending_playback_;
+    size_t pending_playback_frames_ = 0;
+    bool is_playing_ = false;
+    bool initialized_ = false;
+    bool running_ = false;
+    std::atomic<size_t> dropped_{0};
+};
+
+class OutputAudioQueue {
+public:
+    OutputAudioQueue(int output_device, int frames_per_buffer)
+        : output_device_(output_device),
+            frames_per_buffer_(frames_per_buffer)
+    {
+    }
+
+    bool Start()
+    {
+        if (running_.load()) {
+            return true;
+        }
+
+        player_ = std::make_unique<SpacemitAudio::AudioPlayer>(output_device_);
+        if (!player_->Start(kPlaybackSampleRate, kPlaybackChannels, frames_per_buffer_)) {
+            std::cerr << "[playback] failed to start output device "
+                    << output_device_ << std::endl;
+            player_->Close();
+            player_.reset();
+            return false;
+        }
+
+        running_ = true;
+        worker_ = std::thread(&OutputAudioQueue::WorkerLoop, this);
+        std::cout << "[playback] output queue started: device=" << output_device_
+                << ", sample_rate=" << kPlaybackSampleRate
+                << ", channels=" << kPlaybackChannels
+                << ", frames=" << frames_per_buffer_ << std::endl;
+        return true;
+    }
+
+    void Stop()
+    {
+        if (!running_.exchange(false)) {
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            stopped_ = true;
+        }
+        cv_.notify_all();
+        if (worker_.joinable()) {
+            worker_.join();
+        }
+        if (player_) {
+            player_->Stop();
+            player_->Close();
+            player_.reset();
+        }
+        std::cout << "[playback] output queue stopped" << std::endl;
+    }
+
+    void EnqueuePlayback(std::vector<float> interleaved, int channels)
+    {
+        std::vector<float> normalized =
+            NormalizePlaybackChannels(interleaved, channels, kPlaybackChannels);
+        if (normalized.empty()) {
+            return;
+        }
+
+        PlaybackItem item;
+        item.samples = FloatToPcm16(normalized);
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            if (stopped_) {
+                return;
+            }
+            if (!queue_.empty()) {
+                queue_.pop();
+                dropped_++;
+            }
+            queue_.push(std::move(item));
+        }
+        cv_.notify_one();
+    }
+
+    size_t dropped() const
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return dropped_;
+    }
+
+private:
+    struct PlaybackItem {
+        std::vector<int16_t> samples;
+    };
+
+    void WorkerLoop()
+    {
+        while (true) {
+            PlaybackItem item;
+            {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [&]() { return stopped_ || !queue_.empty(); });
+                if (queue_.empty()) {
+                    break;
+                }
+                item = std::move(queue_.front());
+                queue_.pop();
+            }
+
+            if (!player_ || item.samples.empty()) {
+                continue;
+            }
+            const size_t chunk_frames = static_cast<size_t>(std::max(1, frames_per_buffer_));
+            const size_t chunk_samples = chunk_frames * kPlaybackChannels;
+            for (size_t offset = 0; offset < item.samples.size() && running_.load();
+                    offset += chunk_samples) {
+                const size_t samples =
+                    std::min(chunk_samples, item.samples.size() - offset);
+                const uint8_t* data =
+                    reinterpret_cast<const uint8_t*>(item.samples.data() + offset);
+                if (!player_->Write(data, samples * sizeof(int16_t))) {
+                    std::cerr << "[playback] output write failed" << std::endl;
+                    break;
+                }
+            }
+        }
+    }
+
+    int output_device_;
+    int frames_per_buffer_;
+    mutable std::mutex mutex_;
+    std::condition_variable cv_;
+    std::queue<PlaybackItem> queue_;
+    bool stopped_ = false;
+    size_t dropped_ = 0;
+    std::atomic<bool> running_{false};
+    std::unique_ptr<SpacemitAudio::AudioPlayer> player_;
+    std::thread worker_;
+};
+
 std::vector<float> PcmToMonoFloat(const int16_t* pcm,
                                 size_t frames,
                                 int channels,
@@ -716,6 +1577,72 @@ int RunVoiceDemo(int argc, char** argv)
                 return 2;
             }
             options.input_device_hints.push_back(value);
+            continue;
+        }
+        if (std::strcmp(arg, "-o") == 0 || std::strcmp(arg, "--output") == 0) {
+            if (!ParseIntArg(argc, argv, &i, arg, &options.output_device)) return 2;
+            continue;
+        }
+        if (std::strcmp(arg, "--clear-output-device-hints") == 0) {
+            options.output_device_hints.clear();
+            continue;
+        }
+        if (std::strcmp(arg, "--output-device-hint") == 0) {
+            const char* value = nullptr;
+            if (!ReadNextArg(argc, argv, &i, &value)) {
+                std::cerr << arg << " requires a value" << std::endl;
+                return 2;
+            }
+            options.output_device_hints.push_back(value);
+            continue;
+        }
+        if (std::strcmp(arg, "--audio-dir") == 0) {
+            const char* value = nullptr;
+            if (!ReadNextArg(argc, argv, &i, &value)) {
+                std::cerr << arg << " requires a value" << std::endl;
+                return 2;
+            }
+            options.audio_dir = value;
+            continue;
+        }
+        if (std::strcmp(arg, "--no-playback") == 0) {
+            options.enable_playback = false;
+            continue;
+        }
+        if (std::strcmp(arg, "--test-playback") == 0) {
+            const char* value = nullptr;
+            if (!ReadNextArg(argc, argv, &i, &value)) {
+                std::cerr << arg << " requires a value" << std::endl;
+                return 2;
+            }
+            options.test_playback_file = value;
+            continue;
+        }
+        if (std::strcmp(arg, "--test-playback-count") == 0) {
+            if (!ParseIntArg(argc, argv, &i, arg, &options.test_playback_count)) return 2;
+            continue;
+        }
+        if (std::strcmp(arg, "--test-playback-interval-ms") == 0) {
+            if (!ParseIntArg(argc, argv, &i, arg,
+                    &options.test_playback_interval_ms)) return 2;
+            continue;
+        }
+        if (std::strcmp(arg, "--test-intent") == 0) {
+            const char* value = nullptr;
+            if (!ReadNextArg(argc, argv, &i, &value)) {
+                std::cerr << arg << " requires a value" << std::endl;
+                return 2;
+            }
+            options.test_intent_name = value;
+            continue;
+        }
+        if (std::strcmp(arg, "--test-intent-count") == 0) {
+            if (!ParseIntArg(argc, argv, &i, arg, &options.test_intent_count)) return 2;
+            continue;
+        }
+        if (std::strcmp(arg, "--test-intent-interval-ms") == 0) {
+            if (!ParseIntArg(argc, argv, &i, arg,
+                    &options.test_intent_interval_ms)) return 2;
             continue;
         }
         if (std::strcmp(arg, "-t") == 0 || std::strcmp(arg, "--time") == 0) {
@@ -980,6 +1907,21 @@ int RunVoiceDemo(int argc, char** argv)
     if (!ResolveInputDeviceByHints(&options)) {
         return 1;
     }
+    if (options.enable_playback) {
+        if (!ResolveOutputDeviceByHints(&options)) {
+            return 1;
+        }
+        options.audio_dir = ResolveAudioDir(options);
+        if (options.audio_dir.empty()) {
+            std::cerr << Timestamp()
+                    << " [playback] audio directory is empty; intent audio disabled"
+                    << std::endl;
+            options.enable_playback = false;
+        } else {
+            std::cout << Timestamp() << " [playback] audio_dir="
+                    << options.audio_dir << std::endl;
+        }
+    }
     const bool use_webrtc_agc = options.enable_agc && !options.enable_aec;
 
     std::signal(SIGINT, SignalHandler);
@@ -991,6 +1933,9 @@ int RunVoiceDemo(int argc, char** argv)
             << options.capture_channels << "ch, frame=" << options.frames_per_buffer
             << ", speech=ch" << options.speech_channel
             << ", agc=" << (use_webrtc_agc ? "on" : "off") << std::endl;
+    std::cout << Timestamp() << " playback="
+            << (options.enable_playback ? "on" : "off")
+            << ", output=" << options.output_device << std::endl;
     if (options.enable_aec) {
         std::cout << Timestamp() << " AEC: mic=input " << options.input_device
                 << ", ref=input " << options.reference_device << " "
@@ -1107,6 +2052,9 @@ int RunVoiceDemo(int argc, char** argv)
     AudioChunkQueue audio_queue(static_cast<size_t>(options.queue_chunks));
     UtteranceQueue utterance_queue(4);
     ActionQueue action_queue(4);
+    std::unique_ptr<DuplexAudioPipeline> duplex_audio;
+    std::unique_ptr<OutputAudioQueue> output_audio;
+    size_t dropped_playbacks = 0;
     std::vector<int16_t> saved_capture;
     std::vector<int16_t> saved_raw_capture;
 
@@ -1115,9 +2063,61 @@ int RunVoiceDemo(int argc, char** argv)
 #ifdef AI_CUBPET_USE_DDS
     CubpetUiPublisher ui_publisher;
     const bool ui_dds_enabled = options.enable_ui_dds && ui_publisher.Initialize();
-#else
-    const bool ui_dds_enabled = false;
 #endif
+
+    auto enqueue_playback_samples = [&](std::vector<float> samples) {
+        if (duplex_audio) {
+            duplex_audio->EnqueuePlayback(std::move(samples), kPlaybackChannels);
+            return true;
+        }
+        if (output_audio) {
+            output_audio->EnqueuePlayback(std::move(samples), kPlaybackChannels);
+            return true;
+        }
+        return false;
+    };
+
+    auto current_playback_sample_rate = [&]() {
+        if (duplex_audio) {
+            return duplex_audio->sample_rate();
+        }
+        return kPlaybackSampleRate;
+    };
+
+    auto enqueue_intent_audio = [&](VoiceIntent intent, const std::string& audio_path) {
+        if (!options.enable_playback || audio_path.empty()) {
+            return;
+        }
+        std::cout << Timestamp() << " [playback] "
+                << VoiceIntentName(intent) << " " << audio_path << std::endl;
+        std::vector<float> samples;
+        if (!LoadWavForDuplexPlayback(
+                    audio_path, current_playback_sample_rate(), &samples) ||
+                !enqueue_playback_samples(std::move(samples))) {
+            std::cerr << Timestamp() << " [playback] failed: "
+                    << audio_path << std::endl;
+            return;
+        }
+    };
+
+    auto queue_intent = [&](VoiceIntent intent, bool has_doa, float doa_angle) {
+        if (intent == VoiceIntent::kUnknown) {
+            return;
+        }
+        action_queue.Push({intent, has_doa, doa_angle});
+        std::cout << Timestamp() << " [ACTION] queued "
+                << VoiceIntentName(intent) << std::endl;
+        if (options.enable_playback) {
+            enqueue_intent_audio(
+                intent, ResolveAudioPath(VoiceIntentAudioPath(intent), options.audio_dir));
+        }
+#ifdef AI_CUBPET_USE_DDS
+        if (ui_dds_enabled) {
+            ui_publisher.PublishGif(VoiceIntentGifPath(intent));
+        }
+#endif
+    };
+
     std::thread action_thread([&]() {
         while (true) {
             ActionItem action;
@@ -1168,14 +2168,7 @@ int RunVoiceDemo(int argc, char** argv)
                         << text << "\" intent=" << VoiceIntentName(intent)
                         << " time=" << elapsed_ms << "ms" << std::endl;
                 if (intent != VoiceIntent::kUnknown) {
-                    action_queue.Push({intent, utterance.has_doa, utterance.doa_angle});
-                    std::cout << Timestamp() << " [ACTION] queued "
-                            << VoiceIntentName(intent) << std::endl;
-#ifdef AI_CUBPET_USE_DDS
-                    if (ui_dds_enabled) {
-                        ui_publisher.PublishIntent(intent);
-                    }
-#endif
+                    queue_intent(intent, utterance.has_doa, utterance.doa_angle);
                 }
             } else {
                 std::cout << Timestamp() << " [ASR] #" << utterance.index
@@ -1398,6 +2391,12 @@ int RunVoiceDemo(int argc, char** argv)
         if (action_thread.joinable()) {
             action_thread.join();
         }
+        if (duplex_audio) {
+            dropped_playbacks = duplex_audio->dropped();
+        }
+        if (output_audio) {
+            dropped_playbacks += output_audio->dropped();
+        }
         motor_actions.Shutdown();
     };
 
@@ -1443,7 +2442,49 @@ int RunVoiceDemo(int argc, char** argv)
             stop_workers();
             return 1;
         }
+        if (options.enable_playback) {
+            output_audio = std::make_unique<OutputAudioQueue>(
+                options.output_device, options.frames_per_buffer);
+            if (!output_audio->Start()) {
+                aec_audio->Stop();
+                aec_audio->Close();
+                stop_workers();
+                output_audio.reset();
+                return 1;
+            }
+        }
 #endif
+    } else if (options.enable_playback) {
+        DuplexAudioConfig duplex_config;
+        duplex_config.sample_rate = options.capture_rate;
+        duplex_config.capture_channels = options.capture_channels;
+        duplex_config.playback_channels = kPlaybackChannels;
+        duplex_config.frames_per_buffer = options.frames_per_buffer;
+        duplex_config.input_device = options.input_device;
+        duplex_config.output_device = options.output_device;
+
+        duplex_audio = std::make_unique<DuplexAudioPipeline>(duplex_config);
+        if (!duplex_audio->Initialize()) {
+            stop_workers();
+            return 1;
+        }
+        duplex_audio->SetCaptureCallback(
+            [&](const int16_t* interleaved, size_t frames, int channels) {
+                AudioChunk chunk;
+                chunk.frames = frames;
+                chunk.channels = channels;
+                const size_t samples = frames * static_cast<size_t>(channels);
+                chunk.samples.resize(samples);
+                std::memcpy(chunk.samples.data(), interleaved,
+                    samples * sizeof(int16_t));
+                audio_queue.Push(std::move(chunk));
+            });
+
+        if (!duplex_audio->Start()) {
+            duplex_audio->Close();
+            stop_workers();
+            return 1;
+        }
     } else {
         AudioPipelineConfig audio_config;
         audio_config.sample_rate = options.capture_rate;
@@ -1474,6 +2515,54 @@ int RunVoiceDemo(int argc, char** argv)
         }
     }
 
+    if (!options.test_playback_file.empty()) {
+        if (!duplex_audio && !output_audio) {
+            std::cerr << Timestamp()
+                    << " [playback] --test-playback requires playback"
+                    << std::endl;
+        } else {
+            const std::string audio_path =
+                ResolveAudioPath(options.test_playback_file, options.audio_dir);
+            const int count = std::max(1, options.test_playback_count);
+            const int interval_ms = std::max(0, options.test_playback_interval_ms);
+            for (int n = 0; n < count && g_running; ++n) {
+                std::cout << Timestamp() << " [playback] test "
+                        << (n + 1) << "/" << count << " " << audio_path << std::endl;
+                std::vector<float> samples;
+                if (!LoadWavForDuplexPlayback(
+                            audio_path, current_playback_sample_rate(), &samples)) {
+                    std::cerr << Timestamp() << " [playback] failed: "
+                            << audio_path << std::endl;
+                    break;
+                }
+                enqueue_playback_samples(std::move(samples));
+                if (n + 1 < count) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+                }
+            }
+        }
+    }
+
+    if (!options.test_intent_name.empty()) {
+        const VoiceIntent test_intent = VoiceIntentFromName(options.test_intent_name);
+        if (test_intent == VoiceIntent::kUnknown) {
+            std::cerr << Timestamp() << " [ACTION] unknown test intent: "
+                    << options.test_intent_name << std::endl;
+        } else {
+            const int count = std::max(1, options.test_intent_count);
+            const int interval_ms = std::max(0, options.test_intent_interval_ms);
+            for (int n = 0; n < count && g_running; ++n) {
+                std::cout << Timestamp() << " [ACTION] test "
+                        << (n + 1) << "/" << count << " "
+                        << VoiceIntentName(test_intent) << std::endl;
+                queue_intent(test_intent, false, 90.0f);
+                if (n + 1 < count) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+                }
+            }
+        }
+    }
+
     const auto start = std::chrono::steady_clock::now();
     while (g_running) {
         if (options.duration_seconds > 0) {
@@ -1501,7 +2590,17 @@ int RunVoiceDemo(int argc, char** argv)
         aec_audio->Close();
     }
 #endif
+    if (duplex_audio) {
+        duplex_audio->Stop();
+    }
     stop_workers();
+    if (duplex_audio) {
+        duplex_audio->Close();
+    }
+    if (output_audio) {
+        output_audio->Stop();
+        output_audio.reset();
+    }
 
     if (!options.save_wav.empty() && !saved_capture.empty()) {
         if (SaveWavMono16(options.save_wav, saved_capture, kModelSampleRate)) {
@@ -1518,7 +2617,8 @@ int RunVoiceDemo(int argc, char** argv)
 
     std::cout << Timestamp() << " stopped. dropped_audio_chunks=" << audio_queue.dropped()
             << ", dropped_utterances=" << utterance_queue.dropped()
-            << ", dropped_actions=" << action_queue.dropped() << std::endl;
+            << ", dropped_actions=" << action_queue.dropped()
+            << ", dropped_playbacks=" << dropped_playbacks << std::endl;
 #ifdef AI_CUBPET_USE_WEBRTC_AEC
     if (have_aec_stats) {
         std::cout << Timestamp() << " AEC stats: processed_frames="

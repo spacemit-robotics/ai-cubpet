@@ -24,8 +24,6 @@
   <system_depend check="pkg-config --exists Qt5Core">qtbase5-gles-dev</system_depend>
   <system_depend check="pkg-config --exists Qt5Gui">qtbase5-gles-dev</system_depend>
   <system_depend check="pkg-config --exists Qt5Widgets">qtbase5-gles-dev</system_depend>
-  <system_depend check="pkg-config --exists Qt5Multimedia">qtmultimedia5-dev</system_depend>
-  <system_depend check="dpkg-query -W -f='${Status}' libqt5multimedia5-plugins 2>/dev/null | grep -q 'install ok installed'">libqt5multimedia5-plugins</system_depend>
   <system_depend arch="riscv64" check="test -f /usr/include/onnxruntime_cxx_api.h">spacemit-onnxruntime</system_depend>
   <system_depend arch="riscv64">python3-spacemit-ort</system_depend>
   <system_depend check="meson --version">meson</system_depend>

@@ -31,6 +31,7 @@ if(DEFINED ENV{PREFIX} AND NOT "$ENV{PREFIX}" STREQUAL "")
 endif()
 list(APPEND AI_CUBPET_PREFIX_HINTS "${REPO_ROOT}/output/staging")
 
+find_package(motor CONFIG QUIET)
 find_package(Components QUIET)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -358,7 +359,7 @@ if(AI_CUBPET_BUILD_UI_DEMO)
     set(CMAKE_AUTOMOC ON)
     set(CMAKE_INCLUDE_CURRENT_DIR ON)
 
-    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets Multimedia)
+    find_package(Qt5 REQUIRED COMPONENTS Core Gui Widgets)
 
     if(AI_CUBPET_BUILD_TEST_TOOLS)
         add_executable(ai-cubpet-ui-demo
@@ -375,7 +376,6 @@ if(AI_CUBPET_BUILD_UI_DEMO)
             Qt5::Core
             Qt5::Gui
             Qt5::Widgets
-            Qt5::Multimedia
         )
 
         if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -419,7 +419,6 @@ if(AI_CUBPET_BUILD_UI_DEMO)
             Qt5::Core
             Qt5::Gui
             Qt5::Widgets
-            Qt5::Multimedia
             CycloneDDS-CXX::ddscxx
             ToyCommand_cubpet
         )

@@ -20,7 +20,7 @@ uint32_t DdsDomainId()
     const unsigned long value = std::strtoul(env, &end, 10);
     if (end == env || *end != '\0' || value > std::numeric_limits<uint32_t>::max()) {
         std::cerr << "DDS: invalid AI_CUBPET_DDS_DOMAIN_ID=" << env
-                  << ", using domain 0" << std::endl;
+                << ", using domain 0" << std::endl;
         return 0;
     }
     return static_cast<uint32_t>(value);
@@ -87,9 +87,9 @@ void CubpetUiDdsSubscriber::run()
                     const std::string audio_file = sample.data().audioFile();
                     const std::string gif_file = sample.data().gifFile();
                     std::cout << "DDS: CUSTOM_MEDIA audio=" << audio_file
-                              << " gif=" << gif_file << std::endl;
+                            << " gif=" << gif_file << std::endl;
                     emit customMediaReceived(QString::fromStdString(audio_file),
-                                             QString::fromStdString(gif_file));
+                                            QString::fromStdString(gif_file));
                     break;
                 }
                 case ::ToyCommand::CommandType::LEFT_FOOT_SHORT_TOUCH:

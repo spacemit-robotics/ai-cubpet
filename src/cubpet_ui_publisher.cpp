@@ -33,44 +33,10 @@ uint32_t DdsDomainId()
     const unsigned long value = std::strtoul(env, &end, 10);
     if (end == env || *end != '\0' || value > std::numeric_limits<uint32_t>::max()) {
         std::cerr << "[UI] invalid AI_CUBPET_DDS_DOMAIN_ID=" << env
-                  << ", using domain 0" << std::endl;
+                << ", using domain 0" << std::endl;
         return 0;
     }
     return static_cast<uint32_t>(value);
-}
-
-const char* VoiceIntentGifFileName(VoiceIntent intent)
-{
-    switch (intent) {
-    case VoiceIntent::kHeadUp:
-        return "08_explore.gif";
-    case VoiceIntent::kNodHead:
-        return "02_expect.gif";
-    case VoiceIntent::kShakeHead:
-        return "03_diz.gif";
-    case VoiceIntent::kWagTail:
-        return "05_heart.gif";
-    case VoiceIntent::kUnknown:
-    default:
-        return "";
-    }
-}
-
-const char* VoiceIntentAudioFileName(VoiceIntent intent)
-{
-    switch (intent) {
-    case VoiceIntent::kHeadUp:
-        return "009_greet_move.wav";
-    case VoiceIntent::kNodHead:
-        return "008_happy.wav";
-    case VoiceIntent::kShakeHead:
-        return "013_shake_head.wav";
-    case VoiceIntent::kWagTail:
-        return "012_heart.wav";
-    case VoiceIntent::kUnknown:
-    default:
-        return "";
-    }
 }
 
 }  // namespace
@@ -144,30 +110,12 @@ bool CubpetUiPublisher::PublishMedia(const std::string& audio_path, const std::s
         msg.timestamp(NowMilliseconds());
         impl_->writer.write(msg);
         std::cout << "[UI] published audio=" << audio_path
-                  << " gif=" << gif_path << std::endl;
+                << " gif=" << gif_path << std::endl;
         return true;
     } catch (const dds::core::Exception& e) {
         std::cerr << "[UI] DDS publish failed: " << e.what() << std::endl;
         return false;
     }
-}
-
-std::string VoiceIntentGifPath(VoiceIntent intent)
-{
-    const char* file_name = VoiceIntentGifFileName(intent);
-    if (!file_name || file_name[0] == '\0') {
-        return "";
-    }
-    return file_name;
-}
-
-std::string VoiceIntentAudioPath(VoiceIntent intent)
-{
-    const char* file_name = VoiceIntentAudioFileName(intent);
-    if (!file_name || file_name[0] == '\0') {
-        return "";
-    }
-    return file_name;
 }
 
 }  // namespace ai_cubpet

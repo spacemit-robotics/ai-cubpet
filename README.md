@@ -82,6 +82,8 @@ ai_cubpet_daemon config-show
   "audio": {
     "input": -1,
     "input_device_hints": ["SPV Composite", "USB Audio"],
+    "output": -1,
+    "output_device_hints": ["SPV Composite", "USB Audio"],
     "rate": 16000,
     "channels": 4,
     "speech_channel": 1
@@ -101,9 +103,9 @@ ai_cubpet_daemon config-show
 }
 ```
 
-`audio.input = -1` 表示按 `input_device_hints` 自动匹配录音设备。默认优先选择名称包含 `SPV Composite` 或 `USB Audio` 的输入设备，避免刷机、HDMI 插拔或 ALSA card 顺序变化导致固定数字 index 失效。确实需要固定设备时，把 `audio.input` 改成非负 PortAudio 设备 index。
+`audio.input = -1` 表示按 `input_device_hints` 自动匹配录音设备。`audio.output = -1` 表示按 `output_device_hints` 自动匹配播放设备，匹配失败时回退到默认 ALSA 输出。默认优先选择名称包含 `SPV Composite` 或 `USB Audio` 的设备，避免刷机、HDMI 插拔或 ALSA card 顺序变化导致固定数字 index 失效。确实需要固定设备时，把对应字段改成非负 PortAudio 设备 index。
 
-查看当前输入设备：
+查看当前输入/输出设备：
 
 ```bash
 ai-cubpet --list-devices
@@ -115,13 +117,15 @@ ai-cubpet --list-devices
 | --- | --- |
 | 固定录音设备 | `audio.input` |
 | 调整设备名匹配 | `audio.input_device_hints` |
+| 固定播放设备 | `audio.output` |
+| 调整播放设备名匹配 | `audio.output_device_hints` |
 | 修改采样率或声道数 | `audio.rate` / `audio.channels` |
 | 修改送入 VAD/ASR 的通道 | `audio.speech_channel` |
 | 调 VAD 灵敏度 | `vad.threshold` / `vad.stop_threshold` |
 | 保存 ASR 输入 WAV | `debug.save_wav` / `debug.save_wav_file` |
 | 保存原始语音通道 WAV | `debug.save_raw_wav` / `debug.save_raw_wav_file` |
 | 修改 DDS domain | `dds.domain_id` |
-| 指定 UI 资源目录 | `ui.gif_dir` / `ui.audio_dir` |
+| 指定 GIF/音频资源目录 | `ui.gif_dir` / `ui.audio_dir` |
 
 ## 资源下载
 
@@ -149,7 +153,7 @@ export AI_CUBPET_ASSET_ROOT=/home/user/.cache/models/assets
 ai_cubpet_daemon start
 ```
 
-日志中看到 `/tmp/ai-cubpet-ui-runtime-<uid>/share/ai-cubpet/gif` 是正常现象。daemon 会把 UI 二进制、DDS 运行库、GIF、音频和 IDL 拷贝到 `/tmp` runtime mirror，再以 `initer` 用户启动 UI。真实下载缓存仍在上面的资源缓存目录。
+日志中看到 `/tmp/ai-cubpet-ui-runtime-<uid>/share/ai-cubpet/gif` 是正常现象。daemon 会把 UI 二进制、DDS 运行库、GIF 和 IDL 拷贝到 `/tmp` runtime mirror，再以 `initer` 用户启动 UI。音频播放由 `ai-cubpet` 进程通过 SDK audio 组件完成，真实下载缓存仍在上面的资源缓存目录。
 
 ## 构建说明
 
@@ -163,15 +167,15 @@ m
 
 `source build/envsetup.sh` 后，`output/staging/bin` 会加入 `PATH`，因此可以直接执行 `ai_cubpet_daemon`。
 
-`package.xml` 声明了系统依赖，包括 PortAudio、sndfile、FFTW、samplerate、libcurl、QtMultimedia、nlohmann-json、ONNX Runtime 等。SDK 构建会按包依赖检查这些系统包。
+`package.xml` 声明了系统依赖，包括 PortAudio、sndfile、FFTW、samplerate、libcurl、Qt Base、nlohmann-json、ONNX Runtime 等。SDK 构建会按包依赖检查这些系统包。
 
 CMake 默认构建以下产品二进制：
 
 | 目标 | 说明 |
 | --- | --- |
 | `ai_cubpet_daemon` | 推荐入口，管理 UI 和语音控制进程 |
-| `ai-cubpet` | 本地语音控制进程，由 daemon 启动 |
-| `ai-cubpet-ui` | DDS 驱动的 Qt UI 进程，由 daemon 启动 |
+| `ai-cubpet` | 本地语音控制和音频播放进程，由 daemon 启动 |
+| `ai-cubpet-ui` | DDS 驱动的 Qt UI 显示进程，由 daemon 启动 |
 
 默认不会安装开发调试工具。需要 DDS/UI 调试工具时：
 
@@ -207,7 +211,7 @@ https://gitee.com/spacemit-robotics/webrtc-audio-processing.git
 ai_cubpet_daemon logs
 ```
 
-列出输入设备：
+列出输入/输出设备：
 
 ```bash
 ai-cubpet --list-devices
@@ -230,6 +234,7 @@ ai-cubpet --list-devices
 
 ```bash
 ai-cubpet --input -1 --input-device-hint "SPV Composite" \
+  --output -1 --output-device-hint "SPV Composite" \
   --rate 16000 --channels 4 --speech-channel 1
 ```
 
@@ -239,7 +244,7 @@ ai-cubpet --input -1 --input-device-hint "SPV Composite" \
 ai-cubpet-ui
 ```
 
-构建调试工具后，可以手动向 UI 发布 DDS 媒体命令：
+构建调试工具后，可以手动向 UI 发布 DDS 媒体命令；UI 只消费 GIF，`--audio` 字段会被忽略：
 
 ```bash
 ai-cubpet-dds-test-pub --gif 03_diz.gif --audio 013_shake_head.wav

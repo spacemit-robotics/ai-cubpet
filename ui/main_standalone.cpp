@@ -30,7 +30,7 @@ class ToyMainWindowStandalone : public QMainWindow
     Q_OBJECT
 
 public:
-    ToyMainWindowStandalone(QWidget *parent = nullptr)
+    explicit ToyMainWindowStandalone(QWidget *parent = nullptr)
         : QMainWindow(parent)
         , displayWidget_(new ToyDisplayWidget(this))
         , awakeModeTimer_(new QTimer(this))
@@ -240,7 +240,7 @@ private:
             if (!QDir(gifBasePath_).exists()) {
                 qWarning() << "Local GIF directory also not found:" << gifBasePath_;
                 qWarning() << "Please set GIF_PATH environment variable or ensure files exist at:"
-                          << defaultGifBasePath();
+                        << defaultGifBasePath();
             }
         } else {
             qDebug() << "GIF directory found:" << gifBasePath_;
@@ -274,7 +274,7 @@ private:
         const QString prefix = QString("%1_").arg(index, 2, 10, QChar('0'));
         return QDir(gifBasePath_).entryList(
             QStringList() << QString("%1*.gif").arg(prefix)
-                          << QString("%1*.png").arg(prefix),
+                        << QString("%1*.png").arg(prefix),
             QDir::Files,
             QDir::Name);
     }

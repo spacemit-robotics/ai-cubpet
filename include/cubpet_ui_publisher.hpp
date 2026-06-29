@@ -30,9 +30,6 @@ private:
     bool initialized_ = false;
 };
 
-std::string VoiceIntentGifPath(VoiceIntent intent);
-std::string VoiceIntentAudioPath(VoiceIntent intent);
-
 }  // namespace ai_cubpet
 
 #endif  // CUBPET_UI_PUBLISHER_HPP

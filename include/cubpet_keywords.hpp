@@ -15,6 +15,8 @@ enum class VoiceIntent {
 
 VoiceIntent MatchVoiceIntent(const std::string& transcript);
 const char* VoiceIntentName(VoiceIntent intent);
+std::string VoiceIntentGifPath(VoiceIntent intent);
+std::string VoiceIntentAudioPath(VoiceIntent intent);
 
 }  // namespace ai_cubpet
 

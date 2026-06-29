@@ -53,7 +53,7 @@ void ToyDisplayWidget::displayGif(const QString& path)
     setMovie(movie_);
     movie_->start();
     qDebug() << "Displaying GIF:" << absolutePath
-             << "frames=" << movie_->frameCount();
+            << "frames=" << movie_->frameCount();
 }
 
 void ToyDisplayWidget::clearDisplay()

@@ -7,15 +7,12 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QMainWindow>
-#include <QAudioDeviceInfo>
 #include <QRandomGenerator>
-#include <QSoundEffect>
 #include <QSocketNotifier>
 #include <QStandardPaths>
 #include <QStringList>
 #include <QThread>
 #include <QTimer>
-#include <QUrl>
 
 #include <iostream>
 #include <unistd.h>
@@ -34,20 +31,16 @@ public:
         , sleepModeTimer_(new QTimer(this))
         , gifAnimTimer_(new QTimer(this))
         , stdinNotifier_(new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this))
-        , audioEffect_(new QSoundEffect(selectAudioOutputDevice(), this))
     {
         setWindowTitle("AI Cubpet UI");
         setGeometry(100, 100, 932, 466);
         setCentralWidget(displayWidget_);
-        audioEffect_->setVolume(1.0);
 
         loadResources();
         setupDDS();
         setupTimers();
 
         connect(stdinNotifier_, &QSocketNotifier::activated, this, &ToyMainWindow::onStdinReady);
-        connect(audioEffect_, &QSoundEffect::statusChanged, this, &ToyMainWindow::onAudioStatusChanged);
-        connect(audioEffect_, &QSoundEffect::playingChanged, this, &ToyMainWindow::onAudioPlayingChanged);
 
         QTimer::singleShot(0, this, &ToyMainWindow::playDefaultMedia);
         std::cout << "AI Cubpet UI ready. Press q to quit." << std::endl;
@@ -103,21 +96,21 @@ private slots:
         stopAllTimers();
 
         const QString gif_path = resolveMediaPath(gif_file, gifBasePath_);
-        const QString audio_path = resolveMediaPath(audio_file, audioBasePath_);
 
-        std::cout << "Playing custom media: audio=" << audio_path.toStdString()
-                  << " gif=" << gif_path.toStdString() << std::endl;
+        std::cout << "Displaying custom media: gif=" << gif_path.toStdString();
+        if (!audio_file.isEmpty()) {
+            std::cout << " audio ignored by UI=" << audio_file.toStdString();
+        }
+        std::cout << std::endl;
 
         if (!gif_path.isEmpty()) {
             displayWidget_->displayGif(gif_path);
         }
-        playAudio(audio_path);
     }
 
     void onAwakeModeAudioTimeout()
     {
         if (currentMode_ == AWAKE) {
-            playAudio(resolveMediaPath("007_daily_response.wav", audioBasePath_));
             awakeModeTimer_->start(QRandomGenerator::global()->bounded(30000, 60001));
         }
     }
@@ -154,72 +147,8 @@ private slots:
         }
     }
 
-    void onAudioStatusChanged()
-    {
-        switch (audioEffect_->status()) {
-        case QSoundEffect::Ready:
-            qDebug() << "Audio ready:" << audioEffect_->source();
-            if (pendingAudioPlay_) {
-                pendingAudioPlay_ = false;
-                audioEffect_->play();
-                qDebug() << "Playing audio:" << pendingAudioSource_.toLocalFile();
-            }
-            break;
-        case QSoundEffect::Loading:
-            qDebug() << "Audio loading:" << audioEffect_->source();
-            break;
-        case QSoundEffect::Error:
-            pendingAudioPlay_ = false;
-            qWarning() << "Audio playback error:" << audioEffect_->source();
-            break;
-        case QSoundEffect::Null:
-        default:
-            break;
-        }
-    }
-
-    void onAudioPlayingChanged()
-    {
-        qDebug() << "Audio playing state:" << audioEffect_->isPlaying();
-    }
-
 private:
     enum Mode { NORMAL, AWAKE, SLEEP };
-
-    static QAudioDeviceInfo selectAudioOutputDevice()
-    {
-        const QList<QAudioDeviceInfo> devices =
-            QAudioDeviceInfo::availableDevices(QAudio::AudioOutput);
-        const QString configured =
-            QString::fromLocal8Bit(qgetenv("AI_CUBPET_AUDIO_OUTPUT")).trimmed();
-
-        for (const auto& device : devices) {
-            qDebug() << "Audio output device:" << device.deviceName();
-        }
-
-        auto findDevice = [&](const QString& needle) -> QAudioDeviceInfo {
-            if (needle.isEmpty()) {
-                return QAudioDeviceInfo();
-            }
-            for (const auto& device : devices) {
-                if (device.deviceName().contains(needle, Qt::CaseInsensitive)) {
-                    return device;
-                }
-            }
-            return QAudioDeviceInfo();
-        };
-
-        QAudioDeviceInfo selected = findDevice(configured);
-        if (selected.isNull()) {
-            selected = findDevice("SPV Composite Device");
-        }
-        if (selected.isNull()) {
-            selected = QAudioDeviceInfo::defaultOutputDevice();
-        }
-
-        qDebug() << "Selected audio output device:" << selected.deviceName();
-        return selected;
-    }
 
     static QString envOrDefault(const char* first_env,
                                 const char* second_env,
@@ -253,7 +182,7 @@ private:
     static QString defaultMediaBasePath(const QString& subdir)
     {
         return withTrailingSlash(QCoreApplication::applicationDirPath()
-                                 + "/../share/ai-cubpet/" + subdir);
+                                + "/../share/ai-cubpet/" + subdir);
     }
 
     static QString resolveMediaPath(const QString& file, const QString& base_path)
@@ -273,22 +202,13 @@ private:
     void loadResources()
     {
         gifBasePath_ = withTrailingSlash(envOrDefault("GIF_PATH",
-                                                      "AI_CUBPET_GIF_DIR",
-                                                      defaultMediaBasePath("gif")));
-        audioBasePath_ = withTrailingSlash(envOrDefault("AUDIO_PATH",
-                                                        "AI_CUBPET_AUDIO_DIR",
-                                                        defaultMediaBasePath("audio")));
+                                                    "AI_CUBPET_GIF_DIR",
+                                                    defaultMediaBasePath("gif")));
 
         if (!QDir(gifBasePath_).exists()) {
             qWarning() << "GIF directory not found:" << gifBasePath_;
         } else {
             qDebug() << "GIF directory found:" << gifBasePath_;
-        }
-
-        if (!QDir(audioBasePath_).exists()) {
-            qWarning() << "Audio directory not found:" << audioBasePath_;
-        } else {
-            qDebug() << "Audio directory found:" << audioBasePath_;
         }
     }
 
@@ -353,30 +273,6 @@ private:
         displayWidget_->displayGif(resolveMediaPath(gif_files.first(), gifBasePath_));
     }
 
-    void playAudio(const QString& audio_path)
-    {
-        if (audio_path.isEmpty()) {
-            return;
-        }
-        if (!QFileInfo::exists(audio_path)) {
-            qWarning() << "Audio file not found:" << audio_path;
-            return;
-        }
-
-        pendingAudioSource_ = QUrl::fromLocalFile(audio_path);
-        pendingAudioPlay_ = true;
-        audioEffect_->stop();
-        if (audioEffect_->source() != pendingAudioSource_) {
-            audioEffect_->setSource(pendingAudioSource_);
-        }
-        if (audioEffect_->status() == QSoundEffect::Ready) {
-            onAudioStatusChanged();
-        } else {
-            qDebug() << "Queued audio:" << audio_path
-                     << "status=" << audioEffect_->status();
-        }
-    }
-
     ToyDisplayWidget* displayWidget_;
     CubpetUiDdsSubscriber* ddsWorker_;
     QThread* subscriberThread_;
@@ -384,12 +280,8 @@ private:
     QTimer* sleepModeTimer_;
     QTimer* gifAnimTimer_;
     QSocketNotifier* stdinNotifier_;
-    QSoundEffect* audioEffect_;
     Mode currentMode_ = NORMAL;
-    QString audioBasePath_;
     QString gifBasePath_;
-    QUrl pendingAudioSource_;
-    bool pendingAudioPlay_ = false;
 };
 
 int main(int argc, char* argv[])
