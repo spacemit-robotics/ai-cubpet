@@ -37,6 +37,8 @@ volatile sig_atomic_t g_should_stop = 0;
 struct AudioConfig {
     int input = -1;
     std::vector<std::string> input_device_hints = {"SPV Composite", "USB Audio"};
+    int output = -1;
+    std::vector<std::string> output_device_hints = {"SPV Composite", "USB Audio"};
     int rate = 16000;
     int channels = 4;
     int speech_channel = 1;
@@ -195,6 +197,8 @@ json DefaultJson() {
         {"audio", {
             {"input", -1},
             {"input_device_hints", {"SPV Composite", "USB Audio"}},
+            {"output", -1},
+            {"output_device_hints", {"SPV Composite", "USB Audio"}},
             {"rate", 16000},
             {"channels", 4},
             {"speech_channel", 1},
@@ -269,6 +273,8 @@ void ParseConfigJson(const json& root, DaemonConfig& cfg) {
     if (auto it = root.find("audio"); it != root.end() && it->is_object()) {
         GetOpt(*it, "input", cfg.audio.input);
         GetOpt(*it, "input_device_hints", cfg.audio.input_device_hints);
+        GetOpt(*it, "output", cfg.audio.output);
+        GetOpt(*it, "output_device_hints", cfg.audio.output_device_hints);
         GetOpt(*it, "rate", cfg.audio.rate);
         GetOpt(*it, "channels", cfg.audio.channels);
         GetOpt(*it, "speech_channel", cfg.audio.speech_channel);
@@ -471,6 +477,10 @@ std::string MediaDownloadDir(const UiConfig& ui, const std::string& subdir) {
     return DefaultMediaCacheDir(subdir);
 }
 
+std::string AudioAssetDir(const UiConfig& ui) {
+    return MediaDownloadDir(ui, "audio");
+}
+
 std::string LibPath() {
     return PrefixDir() + "/lib";
 }
@@ -555,7 +565,7 @@ bool DownloadFile(const std::string& url, const std::string& dst) {
     FILE* fp = std::fopen(tmp.c_str(), "wb");
     if (!fp) {
         std::cerr << "failed to open asset temp file: " << tmp
-                  << ": " << std::strerror(errno) << "\n";
+                << ": " << std::strerror(errno) << "\n";
         return false;
     }
 
@@ -584,15 +594,15 @@ bool DownloadFile(const std::string& url, const std::string& dst) {
 
     if (rc != CURLE_OK || close_rc != 0 || !NonEmptyRegularFileExists(tmp)) {
         std::cerr << "failed to download asset: " << url
-                  << " (curl=" << curl_easy_strerror(rc)
-                  << ", http=" << response_code << ")\n";
+                << " (curl=" << curl_easy_strerror(rc)
+                << ", http=" << response_code << ")\n";
         std::remove(tmp.c_str());
         return false;
     }
 
     if (std::rename(tmp.c_str(), dst.c_str()) != 0) {
         std::cerr << "failed to install asset: " << dst
-                  << ": " << std::strerror(errno) << "\n";
+                << ": " << std::strerror(errno) << "\n";
         std::remove(tmp.c_str());
         return false;
     }
@@ -600,12 +610,12 @@ bool DownloadFile(const std::string& url, const std::string& dst) {
 }
 
 bool EnsureAssetGroup(const char* label,
-                      const std::string& dir,
-                      const std::string& base_url,
-                      const std::vector<std::string>& required) {
+                    const std::string& dir,
+                    const std::string& base_url,
+                    const std::vector<std::string>& required) {
     if (!MakeDirs(dir)) {
         std::cerr << "failed to create " << label << " asset directory: "
-                  << dir << "\n";
+                << dir << "\n";
         return false;
     }
 
@@ -618,7 +628,7 @@ bool EnsureAssetGroup(const char* label,
         }
         const std::string url = base_url + name;
         std::cerr << "[info] downloading " << label << " asset: "
-                  << name << "\n";
+                << name << "\n";
         if (!DownloadFile(url, path)) {
             ok = false;
             break;
@@ -636,7 +646,7 @@ bool EnsureAssetGroup(const char* label,
     return ok;
 }
 
-bool EnsureMediaAssets(const UiConfig& ui) {
+bool EnsureMediaAssets(const UiConfig& ui, bool include_audio, bool include_gif) {
     constexpr const char* kAudioBaseUrl =
         "https://archive.spacemit.com/spacemit-ai/model_zoo/assets/audio/";
     constexpr const char* kGifBaseUrl =
@@ -645,20 +655,33 @@ bool EnsureMediaAssets(const UiConfig& ui) {
     const CURLcode init_rc = curl_global_init(CURL_GLOBAL_DEFAULT);
     if (init_rc != CURLE_OK) {
         std::cerr << "failed to initialize curl global state: "
-                  << curl_easy_strerror(init_rc) << "\n";
+                << curl_easy_strerror(init_rc) << "\n";
         return false;
     }
 
-    const bool audio_ok = EnsureAssetGroup("audio",
-                                           MediaDownloadDir(ui, "audio"),
-                                           kAudioBaseUrl,
-                                           RequiredAudioAssets());
-    const bool gif_ok = EnsureAssetGroup("GIF",
-                                         MediaDownloadDir(ui, "gif"),
-                                         kGifBaseUrl,
-                                         RequiredGifAssets());
+    bool ok = true;
+    if (include_audio) {
+        ok = EnsureAssetGroup("audio",
+                AudioAssetDir(ui),
+                kAudioBaseUrl,
+                RequiredAudioAssets()) && ok;
+    }
+    if (include_gif) {
+        ok = EnsureAssetGroup("GIF",
+                MediaDownloadDir(ui, "gif"),
+                kGifBaseUrl,
+                RequiredGifAssets()) && ok;
+    }
     curl_global_cleanup();
-    return audio_ok && gif_ok;
+    return ok;
+}
+
+bool EnsureAudioAssets(const UiConfig& ui) {
+    return EnsureMediaAssets(ui, true, false);
+}
+
+bool EnsureGifAssets(const UiConfig& ui) {
+    return EnsureMediaAssets(ui, false, true);
 }
 
 bool StartsWith(const std::string& value, const std::string& prefix) {
@@ -667,8 +690,8 @@ bool StartsWith(const std::string& value, const std::string& prefix) {
 
 bool LibraryNameNeededForUi(const std::string& name) {
     return StartsWith(name, "libddsc") ||
-           StartsWith(name, "libcyclonedds") ||
-           StartsWith(name, "libdds_security");
+            StartsWith(name, "libcyclonedds") ||
+            StartsWith(name, "libdds_security");
 }
 
 std::vector<std::string> GlobPaths(const std::string& pattern) {
@@ -702,7 +725,7 @@ std::string XSocketPath(const std::string& display) {
     }
     size_t end = 1;
     while (end < display.size() &&
-           std::isdigit(static_cast<unsigned char>(display[end]))) {
+            std::isdigit(static_cast<unsigned char>(display[end]))) {
         ++end;
     }
     if (end == 1) {
@@ -785,8 +808,8 @@ std::string EnvWithLibDir(const std::string& lib_dir) {
 }
 
 void SetEnvValue(std::vector<std::pair<std::string, std::string>>& env,
-                 const std::string& key,
-                 const std::string& value) {
+                const std::string& key,
+                const std::string& value) {
     for (auto& kv : env) {
         if (kv.first == key) {
             kv.second = value;
@@ -902,7 +925,7 @@ void SignalHandler(int) {
 }
 
 std::vector<char*> BuildArgv(const std::string& program,
-                             const std::vector<std::string>& args) {
+                            const std::vector<std::string>& args) {
     std::vector<char*> argv;
     argv.reserve(args.size() + 2);
     argv.push_back(const_cast<char*>(program.c_str()));
@@ -947,7 +970,7 @@ bool DropToUser(const std::string& user) {
 }
 
 bool ResolveUser(const std::string& user, struct passwd& out_pw,
-                 std::string& reason) {
+                std::string& reason) {
     struct passwd* pw = nullptr;
     char buf[4096];
     const int rc = getpwnam_r(user.c_str(), &out_pw, buf, sizeof(buf), &pw);
@@ -1132,7 +1155,7 @@ bool PrepareUiRuntimeMirror(const struct passwd& pw,
     }
 
     if (!CopyPathRecursive(BinPath("ai-cubpet-ui"),
-                           PathJoin(PathJoin(runtime_prefix, "bin"), "ai-cubpet-ui"))) {
+                            PathJoin(PathJoin(runtime_prefix, "bin"), "ai-cubpet-ui"))) {
         std::cerr << "failed to copy ai-cubpet-ui into runtime mirror\n";
         return false;
     }
@@ -1148,15 +1171,9 @@ bool PrepareUiRuntimeMirror(const struct passwd& pw,
     }
 
     const std::string gif_src = MediaSourceDir(cfg.ui, "gif");
-    const std::string audio_src = MediaSourceDir(cfg.ui, "audio");
     std::cerr << "[info] ai-cubpet-ui gif source=" << gif_src << "\n";
-    std::cerr << "[info] ai-cubpet-ui audio source=" << audio_src << "\n";
     if (!CopyPathRecursive(gif_src, PathJoin(runtime_share, "gif"))) {
         std::cerr << "failed to copy UI GIF assets into runtime mirror\n";
-        return false;
-    }
-    if (!CopyPathRecursive(audio_src, PathJoin(runtime_share, "audio"))) {
-        std::cerr << "failed to copy UI audio assets into runtime mirror\n";
         return false;
     }
     const std::string idl_src = SharePath("idl");
@@ -1172,9 +1189,9 @@ bool PrepareUiRuntimeMirror(const struct passwd& pw,
 }
 
 bool CanAccessAsUser(const std::string& user,
-                     const std::string& program,
-                     const std::string& lib_dir,
-                     std::string& reason) {
+                    const std::string& program,
+                    const std::string& lib_dir,
+                    std::string& reason) {
     if (user.empty() || user == "root" || geteuid() != 0) {
         return true;
     }
@@ -1236,7 +1253,7 @@ bool CanAccessAsUser(const std::string& user,
 }
 
 UiLaunchPlan BuildUiLaunchPlan(const DaemonConfig& cfg,
-                               const std::string& ui_bin) {
+                                const std::string& ui_bin) {
     UiLaunchPlan plan;
     plan.program = ui_bin;
     plan.prefix = PrefixDir();
@@ -1256,9 +1273,9 @@ UiLaunchPlan BuildUiLaunchPlan(const DaemonConfig& cfg,
     std::string user_reason;
     if (ResolveUser(cfg.ui.user, pw, user_reason)) {
         std::cerr << "[warn] UI user '" << cfg.ui.user
-                  << "' cannot access current SDK prefix: " << reason << "\n";
+                << "' cannot access current SDK prefix: " << reason << "\n";
         std::cerr << "[info] preparing ai-cubpet-ui runtime mirror for user "
-                  << cfg.ui.user << "\n";
+                << cfg.ui.user << "\n";
         if (PrepareUiRuntimeMirror(pw, cfg, plan)) {
             std::string mirror_reason;
             if (CanAccessAsUser(cfg.ui.user,
@@ -1267,18 +1284,18 @@ UiLaunchPlan BuildUiLaunchPlan(const DaemonConfig& cfg,
                                 mirror_reason)) {
                 plan.run_user = cfg.ui.user;
                 std::cerr << "[info] ai-cubpet-ui runtime mirror="
-                          << plan.prefix << "\n";
+                        << plan.prefix << "\n";
                 return plan;
             }
             std::cerr << "[warn] UI runtime mirror is not usable: "
-                      << mirror_reason << "\n";
+                    << mirror_reason << "\n";
         }
     } else {
         reason = user_reason;
     }
 
     std::cerr << "[warn] UI user '" << cfg.ui.user
-              << "' is not usable for this SDK prefix: " << reason << "\n";
+            << "' is not usable for this SDK prefix: " << reason << "\n";
     std::cerr << "[warn] falling back to current user for ai-cubpet-ui\n";
     plan.program = ui_bin;
     plan.prefix = PrefixDir();
@@ -1325,8 +1342,8 @@ CommonEnv(const DaemonConfig& cfg) {
 
 std::vector<std::pair<std::string, std::string>>
 UiEnv(const DaemonConfig& cfg,
-      const std::string& ui_prefix,
-      const std::string& platform_override = "") {
+    const std::string& ui_prefix,
+    const std::string& platform_override = "") {
     std::vector<std::pair<std::string, std::string>> env = {
         {"LD_LIBRARY_PATH", EnvWithLibDir(LibPathForPrefix(ui_prefix))},
         {"AI_CUBPET_DDS_DOMAIN_ID", std::to_string(cfg.dds.domain_id)},
@@ -1336,14 +1353,9 @@ UiEnv(const DaemonConfig& cfg,
     const std::string gif_dir = using_runtime_mirror
         ? PathJoin(share_root, "gif")
         : MediaSourceDir(cfg.ui, "gif");
-    const std::string audio_dir = using_runtime_mirror
-        ? PathJoin(share_root, "audio")
-        : MediaSourceDir(cfg.ui, "audio");
     const std::string platform = platform_override.empty() ? UiPlatformForLaunch(cfg.ui) : platform_override;
     env.push_back({"AI_CUBPET_GIF_DIR", gif_dir});
-    env.push_back({"AI_CUBPET_AUDIO_DIR", audio_dir});
     env.push_back({"GIF_PATH", gif_dir});
-    env.push_back({"AUDIO_PATH", audio_dir});
     if (!platform.empty()) {
         env.push_back({"QT_QPA_PLATFORM", platform});
     }
@@ -1398,6 +1410,7 @@ UiEnv(const DaemonConfig& cfg,
 std::vector<std::string> VoiceArgs(const DaemonConfig& cfg) {
     std::vector<std::string> args = {
         "--input", std::to_string(cfg.audio.input),
+        "--output", std::to_string(cfg.audio.output),
         "--rate", std::to_string(cfg.audio.rate),
         "--channels", std::to_string(cfg.audio.channels),
         "--speech-channel", std::to_string(cfg.audio.speech_channel),
@@ -1420,6 +1433,15 @@ std::vector<std::string> VoiceArgs(const DaemonConfig& cfg) {
         for (const auto& hint : cfg.audio.input_device_hints) {
             if (!hint.empty()) {
                 args.push_back("--input-device-hint");
+                args.push_back(hint);
+            }
+        }
+    }
+    if (cfg.audio.output < 0) {
+        args.push_back("--clear-output-device-hints");
+        for (const auto& hint : cfg.audio.output_device_hints) {
+            if (!hint.empty()) {
+                args.push_back("--output-device-hint");
                 args.push_back(hint);
             }
         }
@@ -1449,22 +1471,22 @@ std::vector<std::pair<std::string, std::string>>
 VoiceEnv(const DaemonConfig& cfg) {
     std::vector<std::pair<std::string, std::string>> env = CommonEnv(cfg);
     const std::string gif_dir = MediaSourceDir(cfg.ui, "gif");
-    const std::string audio_dir = MediaSourceDir(cfg.ui, "audio");
+    const std::string audio_dir = AudioAssetDir(cfg.ui);
     env.push_back({"AI_CUBPET_GIF_DIR", gif_dir});
     env.push_back({"AI_CUBPET_AUDIO_DIR", audio_dir});
     return env;
 }
 
 pid_t SpawnUiWithFallbacks(const DaemonConfig& cfg,
-                           const UiLaunchPlan& ui_plan) {
+                            const UiLaunchPlan& ui_plan) {
     const std::vector<std::string> platforms = UiPlatformCandidates(cfg.ui);
     for (const auto& platform : platforms) {
         std::cerr << "[info] starting ai-cubpet-ui with QT_QPA_PLATFORM="
-                  << platform << "\n";
+                << platform << "\n";
         pid_t pid = Spawn(ui_plan.program,
-                          {},
-                          UiEnv(cfg, ui_plan.prefix, platform),
-                          ui_plan.run_user);
+                        {},
+                        UiEnv(cfg, ui_plan.prefix, platform),
+                        ui_plan.run_user);
         if (pid < 0) {
             std::perror("spawn ai-cubpet-ui");
             continue;
@@ -1475,28 +1497,28 @@ pid_t SpawnUiWithFallbacks(const DaemonConfig& cfg,
         pid_t dead = waitpid(pid, &status, WNOHANG);
         if (dead == 0) {
             std::cerr << "[info] ai-cubpet-ui started, pid=" << pid
-                      << ", platform=" << platform << "\n";
+                    << ", platform=" << platform << "\n";
             return pid;
         }
         if (dead == pid) {
             std::cerr << "[warn] ai-cubpet-ui exited during startup, platform="
-                      << platform << ", status=" << status << "\n";
+                    << platform << ", status=" << status << "\n";
             continue;
         }
         if (dead < 0 && errno == ECHILD) {
             std::cerr << "[warn] ai-cubpet-ui startup state unavailable, platform="
-                      << platform << "\n";
+                    << platform << "\n";
             continue;
         }
         std::cerr << "[warn] waitpid failed for ai-cubpet-ui, platform="
-                  << platform << ": " << std::strerror(errno) << "\n";
+                << platform << ": " << std::strerror(errno) << "\n";
     }
     return -1;
 }
 
 int WaitForStartup(int startup_read_fd,
-                   const std::string& pid_file,
-                   const std::string& log_path) {
+                    const std::string& pid_file,
+                    const std::string& log_path) {
     bool startup_failed = false;
     constexpr int kStartupWaitIterations = 3000;
     for (int i = 0; i < kStartupWaitIterations; ++i) {
@@ -1562,9 +1584,8 @@ void ShutdownChildren(pid_t ui_pid, pid_t voice_pid) {
 }
 
 int DaemonMain(const DaemonConfig& cfg, int startup_write_fd,
-               const std::string& pid_file, const std::string& log_path) {
-    if (chdir("/") != 0) {
-    }
+                const std::string& pid_file, const std::string& log_path) {
+    static_cast<void>(chdir("/"));
     umask(022);
 
     int fd = open(log_path.c_str(), O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -1592,14 +1613,19 @@ int DaemonMain(const DaemonConfig& cfg, int startup_write_fd,
     std::cerr << "[info] ai_cubpet_daemon starting\n";
     std::cerr << "[info] prefix=" << PrefixDir() << "\n";
 
+    if (!EnsureAudioAssets(cfg.ui)) {
+        std::cerr << "failed to prepare ai-cubpet audio assets\n";
+        WriteStartupStatus(startup_write_fd, '0');
+        return 1;
+    }
+
     pid_t ui_pid = -1;
     if (cfg.ui.enabled) {
-        if (!EnsureMediaAssets(cfg.ui)) {
-            std::cerr << "failed to prepare ai-cubpet media assets\n";
+        if (!EnsureGifAssets(cfg.ui)) {
+            std::cerr << "failed to prepare ai-cubpet GIF assets\n";
             WriteStartupStatus(startup_write_fd, '0');
             return 1;
         }
-
         const std::string ui_bin = BinPath("ai-cubpet-ui");
         if (!FileExists(ui_bin)) {
             std::cerr << "missing UI binary: " << ui_bin << "\n";
@@ -1616,8 +1642,8 @@ int DaemonMain(const DaemonConfig& cfg, int startup_write_fd,
         const std::string ui_platform = UiPlatformForLaunch(cfg.ui);
         if (ui_platform != cfg.ui.qt_qpa_platform) {
             std::cerr << "[warn] QT_QPA_PLATFORM fallback: "
-                      << cfg.ui.qt_qpa_platform << " -> " << ui_platform
-                      << " (missing " << WaylandSocketPath(cfg.ui) << ")\n";
+                    << cfg.ui.qt_qpa_platform << " -> " << ui_platform
+                    << " (missing " << WaylandSocketPath(cfg.ui) << ")\n";
         }
         ui_pid = SpawnUiWithFallbacks(cfg, ui_plan);
         if (ui_pid < 0) {
@@ -1708,7 +1734,7 @@ int CmdStart(const std::string& config_path) {
     if (ReadPidFile(cfg.pid_file, existing)) {
         if (ProcessAlive(existing.daemon_pid)) {
             std::cerr << "ai_cubpet_daemon already running (pid="
-                      << existing.daemon_pid << ")\n";
+                    << existing.daemon_pid << ")\n";
             return 1;
         }
         unlink(cfg.pid_file.c_str());
@@ -1820,9 +1846,9 @@ int CmdStatus(const std::string& config_path) {
     std::cout << "ai_cubpet_daemon: running\n";
     std::cout << "  daemon pid: " << rec.daemon_pid << "\n";
     std::cout << "  ui pid:     " << rec.ui_pid
-              << (ProcessAlive(rec.ui_pid) ? "" : " (DEAD)") << "\n";
+            << (ProcessAlive(rec.ui_pid) ? "" : " (DEAD)") << "\n";
     std::cout << "  voice pid:  " << rec.voice_pid
-              << (ProcessAlive(rec.voice_pid) ? "" : " (DEAD)") << "\n";
+            << (ProcessAlive(rec.voice_pid) ? "" : " (DEAD)") << "\n";
     std::cout << "  log:        " << rec.log_path << "\n";
     return 0;
 }
@@ -1835,7 +1861,7 @@ int CmdLogs(const std::string& config_path) {
         return 1;
     }
     execlp("tail", "tail", "-n", "200", "-f", rec.log_path.c_str(),
-           static_cast<char*>(nullptr));
+            static_cast<char*>(nullptr));
     std::perror("execlp tail");
     return 127;
 }

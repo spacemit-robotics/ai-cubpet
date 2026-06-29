@@ -23,7 +23,7 @@ uint32_t DdsDomainId()
     const unsigned long value = std::strtoul(env, &end, 10);
     if (end == env || *end != '\0' || value > std::numeric_limits<uint32_t>::max()) {
         std::cerr << "invalid AI_CUBPET_DDS_DOMAIN_ID=" << env
-                  << ", using domain 0" << std::endl;
+                << ", using domain 0" << std::endl;
         return 0;
     }
     return static_cast<uint32_t>(value);
@@ -39,8 +39,8 @@ long long NowMilliseconds()
 void PrintUsage(const char* argv0)
 {
     std::cout << "Usage: " << argv0
-              << " [--topic ToyCommand_Msg] [--audio FILE] [--gif FILE]"
-              << " [--repeat N] [--delay-ms N]\n";
+            << " [--topic ToyCommand_Msg] [--audio FILE] [--gif FILE]"
+            << " [--repeat N] [--delay-ms N]\n";
 }
 
 }  // namespace
@@ -108,8 +108,8 @@ int main(int argc, char** argv)
             msg.timestamp(NowMilliseconds());
             writer.write(msg);
             std::cout << "published CUSTOM_MEDIA audio=" << audio_file
-                      << " gif=" << gif_file
-                      << " topic=" << topic_name << std::endl;
+                    << " gif=" << gif_file
+                    << " topic=" << topic_name << std::endl;
             std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
         }
     } catch (const dds::core::Exception& e) {
