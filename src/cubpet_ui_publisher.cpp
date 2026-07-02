@@ -4,7 +4,7 @@
 
 #include <dds/dds.hpp>
 
-#include <chrono>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>

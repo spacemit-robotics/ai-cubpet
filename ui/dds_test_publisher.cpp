@@ -2,13 +2,13 @@
 
 #include <dds/dds.hpp>
 
-#include <chrono>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
 #include <string>
-#include <thread>
+#include <thread>  // NOLINT(build/c++11)
 
 namespace {
 

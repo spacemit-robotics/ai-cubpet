@@ -3,10 +3,10 @@
 #include "motor.h"
 
 #include <algorithm>
-#include <chrono>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cstdint>
 #include <iostream>
-#include <thread>
+#include <thread>  // NOLINT(build/c++11)
 #include <vector>
 
 namespace ai_cubpet {
@@ -30,65 +30,53 @@ struct RohsMotorInfo {
     int range_steps;
 };
 
-struct FixedRohsMotor {
-    const char* name;
-    RohsMotorInfo info;
-};
-
 constexpr float kCenterAngle = 90.0f;
 constexpr float kHeadUpAngle = 75.0f;
 constexpr float kHeadDownAngle = 105.0f;
 constexpr float kMotorSpeed = 1.0f;
 constexpr auto kStepDelay = std::chrono::milliseconds(420);
 
-const FixedRohsMotor kHeadLr = {
-    "head_lr",
-    {
-        1, 46, 43, 42, 83,
-        -1, 60, -1,
-        false, false, false,
-        0,
-    },
-};
-
-const FixedRohsMotor kTailLr = {
-    "tail_lr",
-    {
-        2, 37, 38, 39, 61,
-        -1, 60, -1,
-        false, false, false,
-        0,
-    },
-};
-
-const FixedRohsMotor kHeadUd = {
-    "head_ud",
-    {
-        3, 34, 35, 36, 82,
-        -1, 60, -1,
-        false, false, false,
-        0,
-    },
-};
-
 float SafeDoaTarget(float doa_angle_degrees)
 {
     return std::clamp(doa_angle_degrees, 60.0f, 120.0f);
 }
 
-bool RunRohsSequence(const FixedRohsMotor& fixed,
+RohsMotorInfo ToRohsMotorInfo(const cubpet_motor_config& config)
+{
+    return {
+        config.motor_index,
+        config.step_gpio,
+        config.dir_gpio,
+        config.enable_gpio,
+        config.stop_gpio,
+        config.current_position,
+        config.constant_range,
+        config.gpio_max_steps,
+        config.enable_gpio_level != 0,
+        config.dir_gpio_left_level != 0,
+        config.stop_gpio_active_level != 0,
+        config.range_steps,
+    };
+}
+
+bool RunRohsSequence(const cubpet_motor_config* fixed,
                     const std::vector<float>& positions,
                     float speed)
 {
-    RohsMotorInfo info = fixed.info;
+    if (!fixed) {
+        std::cerr << "[motor] missing motor config" << std::endl;
+        return false;
+    }
+
+    RohsMotorInfo info = ToRohsMotorInfo(*fixed);
     motor_dev* motor = motor_alloc_pwm("pwm_RoHS", 0, &info);
     if (!motor) {
-        std::cerr << "[motor] " << fixed.name << " alloc failed" << std::endl;
+        std::cerr << "[motor] " << fixed->name << " alloc failed" << std::endl;
         return false;
     }
 
     if (motor_init_one(motor) < 0) {
-        std::cerr << "[motor] " << fixed.name << " init failed" << std::endl;
+        std::cerr << "[motor] " << fixed->name << " init failed" << std::endl;
         motor_free(&motor, 1);
         return false;
     }
@@ -101,7 +89,7 @@ bool RunRohsSequence(const FixedRohsMotor& fixed,
     for (float position : positions) {
         cmd.pos_des = position;
         if (motor_set_cmd_one(motor, &cmd) < 0) {
-            std::cerr << "[motor] " << fixed.name << " target " << position
+            std::cerr << "[motor] " << fixed->name << " target " << position
                     << " failed" << std::endl;
             ok = false;
             break;
@@ -109,7 +97,7 @@ bool RunRohsSequence(const FixedRohsMotor& fixed,
 
         motor_state state{};
         motor_get_state_one(motor, &state);
-        std::cout << "[motor] " << fixed.name << " target=" << position
+        std::cout << "[motor] " << fixed->name << " target=" << position
                 << " pos=" << state.pos << " vel=" << state.vel << std::endl;
         std::this_thread::sleep_for(kStepDelay);
     }
@@ -125,6 +113,15 @@ bool RunRohsSequence(const FixedRohsMotor& fixed,
 
 bool CubpetMotorActions::Initialize()
 {
+    cubpet_peripheral_config_init_defaults(&config_);
+    const int rc = cubpet_peripheral_config_load_auto(&config_);
+    if (rc != 0) {
+        std::cerr << "[motor] failed to load peripheral config, rc=" << rc
+                << std::endl;
+        initialized_ = false;
+        return false;
+    }
+    std::cout << "[motor] peripheral config=" << config_.board_name << std::endl;
     initialized_ = true;
     std::cout << "[motor] actions ready" << std::endl;
     return true;
@@ -156,20 +153,26 @@ bool CubpetMotorActions::Execute(VoiceIntent intent,
 
     switch (intent) {
     case VoiceIntent::kHeadUp: {
-        bool ok = RunRohsSequence(kHeadUd, {kHeadUpAngle, kCenterAngle}, kMotorSpeed);
+        bool ok = RunRohsSequence(
+            cubpet_peripheral_find_motor(&config_, "head_ud"),
+            {kHeadUpAngle, kCenterAngle}, kMotorSpeed);
         if (has_doa) {
             const float target = SafeDoaTarget(doa_angle_degrees);
-            ok = RunRohsSequence(kHeadLr, {target, kCenterAngle}, kMotorSpeed) && ok;
+            ok = RunRohsSequence(
+                cubpet_peripheral_find_motor(&config_, "head_lr"),
+                {target, kCenterAngle}, kMotorSpeed) && ok;
         }
         return ok;
     }
     case VoiceIntent::kNodHead:
-        return RunRohsSequence(kHeadUd,
+        return RunRohsSequence(cubpet_peripheral_find_motor(&config_, "head_ud"),
             {kHeadDownAngle, kHeadUpAngle, kHeadDownAngle, kCenterAngle}, kMotorSpeed);
     case VoiceIntent::kShakeHead:
-        return RunRohsSequence(kHeadLr, {75.0f, 105.0f, 75.0f, kCenterAngle}, kMotorSpeed);
+        return RunRohsSequence(cubpet_peripheral_find_motor(&config_, "head_lr"),
+            {75.0f, 105.0f, 75.0f, kCenterAngle}, kMotorSpeed);
     case VoiceIntent::kWagTail:
-        return RunRohsSequence(kTailLr, {75.0f, 105.0f, kCenterAngle}, kMotorSpeed);
+        return RunRohsSequence(cubpet_peripheral_find_motor(&config_, "tail_lr"),
+            {75.0f, 105.0f, kCenterAngle}, kMotorSpeed);
     case VoiceIntent::kUnknown:
     default:
         return false;

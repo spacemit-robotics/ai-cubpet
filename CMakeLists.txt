@@ -160,6 +160,7 @@ if(AI_CUBPET_BUILD_PERIPHERALS_DEMO)
 
     add_executable(ai-cubpet-peripherals
         examples/peripherals.c
+        src/cubpet_peripheral_config.cpp
     )
 
     target_include_directories(ai-cubpet-peripherals PRIVATE
@@ -182,6 +183,7 @@ if(AI_CUBPET_BUILD_PERIPHERALS_DEMO)
         m
         stdc++
     )
+    ai_cubpet_link_nlohmann_json(ai-cubpet-peripherals)
 
     if(LIBGPIOD_FOUND)
         target_include_directories(ai-cubpet-peripherals PRIVATE ${LIBGPIOD_INCLUDE_DIRS})
@@ -240,6 +242,7 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
         src/cubpet_doa_runtime.cpp
         src/cubpet_keywords.cpp
         src/cubpet_motor_actions.cpp
+        src/cubpet_peripheral_config.cpp
         src/cubpet_ui_publisher.cpp
         src/cubpet_voice_demo.cpp
     )
@@ -302,6 +305,7 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
         rt
         m
     )
+    ai_cubpet_link_nlohmann_json(ai-cubpet)
 
     target_link_directories(ai-cubpet PRIVATE
         ${PORTAUDIO_LIBRARY_DIRS}
@@ -508,9 +512,7 @@ add_executable(ai_cubpet_daemon
     examples/ai_cubpet_daemon.cpp
 )
 
-if(TARGET nlohmann_json::nlohmann_json)
-    target_link_libraries(ai_cubpet_daemon PRIVATE nlohmann_json::nlohmann_json)
-endif()
+ai_cubpet_link_nlohmann_json(ai_cubpet_daemon)
 target_link_libraries(ai_cubpet_daemon PRIVATE CURL::libcurl)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -537,6 +539,9 @@ install(TARGETS ai_cubpet_daemon RUNTIME DESTINATION bin)
 
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY idl/ DESTINATION share/ai-cubpet/idl)
+install(DIRECTORY config/boards/ DESTINATION share/ai-cubpet/boards
+    FILES_MATCHING
+        PATTERN "*.json")
 
 set(AI_CUBPET_GIF_ASSET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets/gif"
     CACHE PATH "Directory containing ai-cubpet GIF assets")

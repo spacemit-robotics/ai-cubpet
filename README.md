@@ -127,6 +127,30 @@ ai-cubpet --list-devices
 | 修改 DDS domain | `dds.domain_id` |
 | 指定 GIF/音频资源目录 | `ui.gif_dir` / `ui.audio_dir` |
 
+## 板级外设配置
+
+电机 GPIO、触摸/唤醒 GPIO、NFC/light sensor/g-sensor I2C 参数、风扇 GPIO 和电源节点放在板级配置文件中。当前内置配置：
+
+```text
+share/ai-cubpet/boards/MUSE-Pi-Pro.json
+```
+
+运行时会读取 `/proc/device-tree/model`，例如：
+
+```text
+spacemit k1-x MUSE-Pi-Pro board
+```
+
+当 model 字符串包含配置里的 `model_matches` 项时，会使用对应板级配置。默认查找顺序：
+
+1. `AI_CUBPET_PERIPHERAL_CONFIG` 指向的单个 JSON 文件
+2. `AI_CUBPET_PERIPHERAL_CONFIG_DIR` 指向的目录
+3. `/etc/ai-cubpet/boards`
+4. 程序安装前缀下的 `share/ai-cubpet/boards`
+5. `/usr/share/ai-cubpet/boards`
+
+现场调试或覆盖板级参数时，推荐复制安装后的 JSON 到 `/etc/ai-cubpet/boards/` 后修改。
+
 ## 资源下载
 
 仓库不携带 GIF 和音频资源。`ai_cubpet_daemon start` 会检查必需资源，缺失或空文件会自动下载。

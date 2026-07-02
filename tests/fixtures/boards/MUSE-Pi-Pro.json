@@ -1,0 +1,104 @@
+{
+  "board_name": "MUSE-Pi-Pro",
+  "model_matches": [
+    "MUSE-Pi-Pro"
+  ],
+  "motors": [
+    {
+      "name": "head_lr",
+      "motor_index": 1,
+      "step_gpio": 51,
+      "dir_gpio": 52,
+      "enable_gpio": 50,
+      "stop_gpio": 0,
+      "current_position": -1,
+      "constant_range": 60,
+      "gpio_max_steps": -1,
+      "enable_gpio_level": false,
+      "dir_gpio_left_level": false,
+      "stop_gpio_active_level": false,
+      "range_steps": 0
+    },
+    {
+      "name": "head_ud",
+      "motor_index": 2,
+      "step_gpio": 47,
+      "dir_gpio": 48,
+      "enable_gpio": 46,
+      "stop_gpio": 0,
+      "current_position": -1,
+      "constant_range": 60,
+      "gpio_max_steps": -1,
+      "enable_gpio_level": false,
+      "dir_gpio_left_level": false,
+      "stop_gpio_active_level": false,
+      "range_steps": 0
+    }
+  ],
+  "i2c_devices": {
+    "nfc": {
+      "name": "SI512:nfc0",
+      "i2c_dev": "/dev/i2c-4",
+      "scl_gpio": 41,
+      "sda_gpio": 40,
+      "i2c_addr": 40,
+      "demo_block": 4,
+      "irq_gpio": 72,
+      "reset_gpio": 73
+    },
+    "light_sensor": {
+      "name": "W1160:als0",
+      "i2c_dev": "/dev/i2c-3",
+      "scl_gpio": 38,
+      "sda_gpio": 39,
+      "i2c_addr": 72
+    },
+    "g_sensor": {
+      "name": "g-sensor",
+      "i2c_dev": "/dev/i2c-2",
+      "scl_gpio": 70,
+      "sda_gpio": 71,
+      "i2c_addr": 25,
+      "int1_gpio": 49
+    }
+  },
+  "gpio_inputs": [
+    {
+      "name": "touch1",
+      "role": "touch1",
+      "chip_name": "gpiochip0",
+      "line_offset": 33,
+      "active_high": true
+    },
+    {
+      "name": "touch2",
+      "role": "touch2",
+      "chip_name": "gpiochip0",
+      "line_offset": 34,
+      "active_high": true
+    },
+    {
+      "name": "touch3",
+      "role": "touch3",
+      "chip_name": "gpiochip0",
+      "line_offset": 35,
+      "active_high": true
+    },
+    {
+      "name": "wake",
+      "role": "wake",
+      "chip_name": "gpiochip0",
+      "line_offset": 92,
+      "active_high": true
+    }
+  ],
+  "pm": {
+    "charger_node": "ip2317-charger",
+    "capacity_node": "cw-bat"
+  },
+  "fan": {
+    "gpio": 91,
+    "period": 100000,
+    "duty_cycle": 0
+  }
+}

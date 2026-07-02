@@ -185,7 +185,7 @@ bool DirectoryExists(const std::string& path) {
 }
 
 template <typename T>
-void GetOpt(const json& j, const char* key, T& out) {
+void GetOpt(const json& j, const char* key, T& out) {  // NOLINT(runtime/references)
     auto it = j.find(key);
     if (it != j.end() && !it->is_null()) {
         out = it->get<T>();
@@ -269,7 +269,7 @@ std::string DefaultConfigPath() {
     return DefaultConfigDir() + "/ai_cubpet.json";
 }
 
-void ParseConfigJson(const json& root, DaemonConfig& cfg) {
+void ParseConfigJson(const json& root, DaemonConfig& cfg) {  // NOLINT(runtime/references)
     if (auto it = root.find("audio"); it != root.end() && it->is_object()) {
         GetOpt(*it, "input", cfg.audio.input);
         GetOpt(*it, "input_device_hints", cfg.audio.input_device_hints);
@@ -807,7 +807,7 @@ std::string EnvWithLibDir(const std::string& lib_dir) {
     return value;
 }
 
-void SetEnvValue(std::vector<std::pair<std::string, std::string>>& env,
+void SetEnvValue(std::vector<std::pair<std::string, std::string>>& env,  // NOLINT(runtime/references)
                 const std::string& key,
                 const std::string& value) {
     for (auto& kv : env) {
@@ -903,7 +903,7 @@ bool WritePidFile(const std::string& path, const PidRecord& rec) {
     return true;
 }
 
-bool ReadPidFile(const std::string& path, PidRecord& rec) {
+bool ReadPidFile(const std::string& path, PidRecord& rec) {  // NOLINT(runtime/references)
     std::ifstream in(path);
     if (!in.good()) {
         return false;
@@ -969,8 +969,8 @@ bool DropToUser(const std::string& user) {
     return true;
 }
 
-bool ResolveUser(const std::string& user, struct passwd& out_pw,
-                std::string& reason) {
+bool ResolveUser(const std::string& user, struct passwd& out_pw,  // NOLINT(runtime/references)
+                std::string& reason) {  // NOLINT(runtime/references)
     struct passwd* pw = nullptr;
     char buf[4096];
     const int rc = getpwnam_r(user.c_str(), &out_pw, buf, sizeof(buf), &pw);
@@ -1140,7 +1140,7 @@ bool CopyUiLibraries(const std::string& src_lib, const std::string& dst_lib) {
 
 bool PrepareUiRuntimeMirror(const struct passwd& pw,
                             const DaemonConfig& cfg,
-                            UiLaunchPlan& plan) {
+                            UiLaunchPlan& plan) {  // NOLINT(runtime/references)
     const std::string runtime_prefix =
         "/tmp/ai-cubpet-ui-runtime-" + std::to_string(static_cast<long long>(pw.pw_uid));
     if (!RemoveTree(runtime_prefix)) {
@@ -1191,7 +1191,7 @@ bool PrepareUiRuntimeMirror(const struct passwd& pw,
 bool CanAccessAsUser(const std::string& user,
                     const std::string& program,
                     const std::string& lib_dir,
-                    std::string& reason) {
+                    std::string& reason) {  // NOLINT(runtime/references)
     if (user.empty() || user == "root" || geteuid() != 0) {
         return true;
     }

@@ -23,9 +23,9 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <chrono>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cmath>
-#include <condition_variable>
+#include <condition_variable>  // NOLINT(build/c++11)
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -35,11 +35,11 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
-#include <mutex>
+#include <mutex>  // NOLINT(build/c++11)
 #include <queue>
 #include <string>
 #include <sstream>
-#include <thread>
+#include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <vector>
 
@@ -2632,7 +2632,7 @@ int RunVoiceDemo(int argc, char** argv)
     }
 #endif
     return 0;
-}
+}  // NOLINT(readability/fn_size)
 
 }  // namespace ai_cubpet
 

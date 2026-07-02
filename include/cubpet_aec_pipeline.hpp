@@ -7,12 +7,12 @@
 #include <deque>
 #include <functional>
 #include <memory>
-#include <mutex>
+#include <mutex>  // NOLINT(build/c++11)
 #include <string>
-#include <thread>
+#include <thread>  // NOLINT(build/c++11)
 #include <utility>
 #include <vector>
-#include <condition_variable>
+#include <condition_variable>  // NOLINT(build/c++11)
 
 namespace SpacemitAudio {
 class AudioCapture;

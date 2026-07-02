@@ -14,6 +14,7 @@
 #include <string.h>
 #include <unistd.h>
 
+#include <cubpet_peripheral_config.h>
 #include <light_sensor.h>
 #include <misc_io.h>
 #include <motor.h>
@@ -46,87 +47,7 @@ struct pwm_generic_info {
     uint32_t duty_cycle;
 };
 
-struct fixed_gpio_input {
-    const char *name;
-    const char *chip_name;
-    unsigned int line_offset;
-};
-
-struct fixed_rohs_motor {
-    const char *name;
-    struct rohs_motor_info info;
-};
-
-static const char *k_default_i2c_dev = "/dev/i2c-5";
-static const uint8_t k_nfc_i2c_addr = 0x28;
-static const uint8_t k_nfc_demo_block = 4;
-static const uint8_t k_light_sensor_i2c_addr = 0x48;
-
-static const char *k_pm_charger_node = "ip2317-charger";
-static const char *k_pm_capacity_node = "cw-bat";
-
-static const struct fixed_gpio_input k_misc_inputs[] = {
-    {"GPIO79", "gpiochip0", 79},
-    {"GPIO77", "gpiochip0", 77},
-    {"GPIO113", "gpiochip0", 113},
-    {"GPIO126", "gpiochip0", 126},
-    {"GPIO114", "gpiochip0", 114},
-    {"GPIO73", "gpiochip0", 73},
-};
-
-static const struct fixed_rohs_motor k_rohs_motors[] = {
-    {
-        "head_lr",
-        {
-            .motor_index = 1,
-            .step_gpio = 46,
-            .dir_gpio = 43,
-            .enable_gpio = 42,
-            .stop_gpio = 83,
-            .current_position = -1,
-            .constant_range = 60,
-            .gpio_max_steps = -1,
-            .enable_gpio_level = false,
-            .dir_gpio_left_level = false,
-            .stop_gpio_active_level = false,
-            .range_steps = 0,
-        },
-    },
-    {
-        "tail_lr",
-        {
-            .motor_index = 2,
-            .step_gpio = 37,
-            .dir_gpio = 38,
-            .enable_gpio = 39,
-            .stop_gpio = 61,
-            .current_position = -1,
-            .constant_range = 60,
-            .gpio_max_steps = -1,
-            .enable_gpio_level = false,
-            .dir_gpio_left_level = false,
-            .stop_gpio_active_level = false,
-            .range_steps = 0,
-        },
-    },
-    {
-        "head_ud",
-        {
-            .motor_index = 3,
-            .step_gpio = 34,
-            .dir_gpio = 35,
-            .enable_gpio = 36,
-            .stop_gpio = 82,
-            .current_position = -1,
-            .constant_range = 60,
-            .gpio_max_steps = -1,
-            .enable_gpio_level = false,
-            .dir_gpio_left_level = false,
-            .stop_gpio_active_level = false,
-            .range_steps = 0,
-        },
-    },
-};
+static struct cubpet_peripheral_config g_peripheral_config;
 
 static void print_usage(const char *prog)
 {
@@ -135,7 +56,7 @@ static void print_usage(const char *prog)
     printf("  %s pm [count]\n", prog);
     printf("  %s wifi <scan|state|info|list|on|off|connect|disconnect|remove|mac> [args...]\n", prog);
     printf("  %s nfc [count]\n", prog);
-    printf("  %s motor [all|head_lr|tail_lr|head_ud] [speed]\n", prog);
+    printf("  %s motor [all|NAME] [speed]\n", prog);
     printf("  %s fan [speed_percent] [seconds]\n", prog);
     printf("  %s light_sensor [count]\n", prog);
 }
@@ -156,6 +77,45 @@ static int parse_int(const char *text, int fallback)
     return (int)value;
 }
 
+static int load_peripheral_config(void)
+{
+    static bool loaded;
+    static int load_rc;
+
+    if (loaded)
+        return load_rc;
+
+    cubpet_peripheral_config_init_defaults(&g_peripheral_config);
+    load_rc = cubpet_peripheral_config_load_auto(&g_peripheral_config);
+    loaded = true;
+    if (load_rc != 0) {
+        fprintf(stderr, "failed to load peripheral config: %d\n", load_rc);
+        return load_rc;
+    }
+    printf("[config] board=%s\n", g_peripheral_config.board_name);
+    return 0;
+}
+
+static struct rohs_motor_info rohs_info_from_config(
+    const struct cubpet_motor_config *config)
+{
+    struct rohs_motor_info info = {
+        .motor_index = config->motor_index,
+        .step_gpio = config->step_gpio,
+        .dir_gpio = config->dir_gpio,
+        .enable_gpio = config->enable_gpio,
+        .stop_gpio = config->stop_gpio,
+        .current_position = config->current_position,
+        .constant_range = config->constant_range,
+        .gpio_max_steps = config->gpio_max_steps,
+        .enable_gpio_level = config->enable_gpio_level != 0,
+        .dir_gpio_left_level = config->dir_gpio_left_level != 0,
+        .stop_gpio_active_level = config->stop_gpio_active_level != 0,
+        .range_steps = config->range_steps,
+    };
+    return info;
+}
+
 static void misc_event_cb(struct misc_dev *dev, enum misc_event ev,
     uint64_t timestamp_us, void *args)
 {
@@ -172,29 +132,35 @@ static int run_misc_io(int argc, char **argv)
     const char *mode = argc > 0 ? argv[0] : "get";
     int count = parse_int(argc > 1 ? argv[1] : NULL, 5);
 
+    if (load_peripheral_config() != 0)
+        return 1;
+
     if (strcmp(mode, "watch") == 0 || strcmp(mode, "trigger") == 0) {
-        struct misc_dev *devs[ARRAY_SIZE(k_misc_inputs)] = {0};
+        struct misc_dev *devs[CUBPET_PERIPHERAL_MAX_GPIO_INPUTS] = {0};
         int ret = 0;
 
-        for (size_t i = 0; i < ARRAY_SIZE(k_misc_inputs); ++i) {
+        for (size_t i = 0; i < g_peripheral_config.gpio_input_count; ++i) {
+            const struct cubpet_gpio_input_config *input =
+                &g_peripheral_config.gpio_inputs[i];
             struct misc_gpiod_ctx ctx = {
-                .chip_name = k_misc_inputs[i].chip_name,
-                .line_offset = k_misc_inputs[i].line_offset,
+                .chip_name = input->chip_name,
+                .line_offset = input->line_offset,
                 .consumer = "ai-cubpet",
             };
 
             devs[i] = misc_io_alloc(MISC_TYPE_GENERIC, MISC_DIR_INPUT, &ctx);
             if (!devs[i]) {
-                fprintf(stderr, "[misc_io] alloc failed: %s\n", k_misc_inputs[i].name);
+                fprintf(stderr, "[misc_io] alloc failed: %s\n", input->name);
                 ret = 1;
                 continue;
             }
-            misc_io_config(devs[i], MISC_ACTIVE_HIGH, 0);
-            misc_io_trigger(devs[i], misc_event_cb, (void *)k_misc_inputs[i].name);
+            misc_io_config(devs[i],
+                input->active_high ? MISC_ACTIVE_HIGH : MISC_ACTIVE_LOW, 0);
+            misc_io_trigger(devs[i], misc_event_cb, (void *)input->name);
         }
         for (int i = 0; i < count; ++i)
             sleep(1);
-        for (size_t i = 0; i < ARRAY_SIZE(devs); ++i)
+        for (size_t i = 0; i < g_peripheral_config.gpio_input_count; ++i)
             misc_io_free(devs[i]);
         return ret;
     }
@@ -205,18 +171,22 @@ static int run_misc_io(int argc, char **argv)
     }
 
     for (int i = 0; i < count; ++i) {
-        for (size_t j = 0; j < ARRAY_SIZE(k_misc_inputs); ++j) {
+        for (size_t j = 0; j < g_peripheral_config.gpio_input_count; ++j) {
+            const struct cubpet_gpio_input_config *input =
+                &g_peripheral_config.gpio_inputs[j];
             struct misc_gpiod_ctx ctx = {
-                .chip_name = k_misc_inputs[j].chip_name,
-                .line_offset = k_misc_inputs[j].line_offset,
+                .chip_name = input->chip_name,
+                .line_offset = input->line_offset,
                 .consumer = "ai-cubpet",
             };
             struct misc_dev *dev = misc_io_alloc(MISC_TYPE_GENERIC, MISC_DIR_INPUT, &ctx);
             if (!dev) {
-                fprintf(stderr, "[misc_io] alloc failed: %s\n", k_misc_inputs[j].name);
+                fprintf(stderr, "[misc_io] alloc failed: %s\n", input->name);
                 continue;
             }
-            printf("[misc_io] %s=%d\n", k_misc_inputs[j].name, misc_io_get(dev));
+            misc_io_config(dev,
+                input->active_high ? MISC_ACTIVE_HIGH : MISC_ACTIVE_LOW, 0);
+            printf("[misc_io] %s=%d\n", input->name, misc_io_get(dev));
             misc_io_free(dev);
         }
         sleep(1);
@@ -258,10 +228,15 @@ static const char *pm_status_name(enum pm_status status)
 static int run_pm(int argc, char **argv)
 {
     int count = parse_int(argc > 0 ? argv[0] : NULL, 5);
-    struct pm_dev *batt = pm_alloc_generic("main_batt",
-        k_pm_charger_node, k_pm_capacity_node, NULL);
+    struct pm_dev *batt;
     int ret;
 
+    if (load_peripheral_config() != 0)
+        return 1;
+
+    batt = pm_alloc_generic("main_batt",
+        g_peripheral_config.pm.charger_node,
+        g_peripheral_config.pm.capacity_node, NULL);
     if (!batt) {
         fprintf(stderr, "pm_alloc_generic failed\n");
         return 1;
@@ -451,9 +426,16 @@ static int run_nfc(int argc, char **argv)
     int count = parse_int(argc > 0 ? argv[0] : NULL, 20);
     struct nfc_dev *dev;
 
+    if (load_peripheral_config() != 0)
+        return 1;
+
     printf("[nfc] dev=%s addr=0x%02X block=%u\n",
-        k_default_i2c_dev, k_nfc_i2c_addr, k_nfc_demo_block);
-    dev = nfc_alloc_i2c("SI512:nfc0", k_default_i2c_dev, k_nfc_i2c_addr);
+        g_peripheral_config.nfc.i2c_dev,
+        g_peripheral_config.nfc.i2c_addr,
+        g_peripheral_config.nfc.demo_block);
+    dev = nfc_alloc_i2c(g_peripheral_config.nfc.name,
+        g_peripheral_config.nfc.i2c_dev,
+        g_peripheral_config.nfc.i2c_addr);
     if (!dev) {
         fprintf(stderr, "nfc_alloc_i2c failed\n");
         return 1;
@@ -473,7 +455,8 @@ static int run_nfc(int argc, char **argv)
         if (ret == 0) {
             uint8_t buf[16] = {0};
             print_nfc_uid(&info);
-            ret = nfc_read_block(dev, k_nfc_demo_block, buf, sizeof(buf));
+            ret = nfc_read_block(dev, g_peripheral_config.nfc.demo_block,
+                buf, sizeof(buf));
             printf("[nfc] read block ret=%d first4=%02X %02X %02X %02X\n",
                 ret, buf[0], buf[1], buf[2], buf[3]);
             break;
@@ -490,7 +473,7 @@ static int run_nfc(int argc, char **argv)
     return 0;
 }
 
-static int run_one_rohs_motor(const struct fixed_rohs_motor *fixed, float speed)
+static int run_one_rohs_motor(const struct cubpet_motor_config *fixed, float speed)
 {
     struct rohs_motor_info info;
     struct motor_dev *motor;
@@ -505,7 +488,7 @@ static int run_one_rohs_motor(const struct fixed_rohs_motor *fixed, float speed)
     if (!fixed)
         return 1;
 
-    info = fixed->info;
+    info = rohs_info_from_config(fixed);
 
     printf("[motor] %s index=%u step=%u dir=%u sleep=%u stop=%u range=%d speed=%.1f\n",
         fixed->name,
@@ -544,24 +527,24 @@ static int run_motor(int argc, char **argv)
     const char *which = argc > 0 ? argv[0] : "all";
     float speed = (float)parse_int(argc > 1 ? argv[1] : NULL, 2);
     int ret = 0;
+    bool found = false;
 
-    for (size_t i = 0; i < ARRAY_SIZE(k_rohs_motors); ++i) {
-        if (strcmp(which, "all") != 0 && strcmp(which, k_rohs_motors[i].name) != 0)
+    if (load_peripheral_config() != 0)
+        return 1;
+
+    for (size_t i = 0; i < g_peripheral_config.motor_count; ++i) {
+        const struct cubpet_motor_config *motor =
+            &g_peripheral_config.motors[i];
+        if (strcmp(which, "all") != 0 && strcmp(which, motor->name) != 0)
             continue;
-        if (run_one_rohs_motor(&k_rohs_motors[i], speed) != 0)
+        found = true;
+        if (run_one_rohs_motor(motor, speed) != 0)
             ret = 1;
     }
 
-    if (ret == 0 && strcmp(which, "all") != 0) {
-        bool found = false;
-        for (size_t i = 0; i < ARRAY_SIZE(k_rohs_motors); ++i) {
-            if (strcmp(which, k_rohs_motors[i].name) == 0)
-                found = true;
-        }
-        if (!found) {
-            fprintf(stderr, "unknown motor: %s\n", which);
-            return 1;
-        }
+    if (!found && strcmp(which, "all") != 0) {
+        fprintf(stderr, "unknown motor: %s\n", which);
+        return 1;
     }
 
     return ret;
@@ -571,10 +554,7 @@ static int run_fan(int argc, char **argv)
 {
     int speed = parse_int(argc > 0 ? argv[0] : NULL, 50);
     int seconds = parse_int(argc > 1 ? argv[1] : NULL, 5);
-    struct pwm_generic_info info = {
-        .period = 100000,
-        .duty_cycle = 0,
-    };
+    struct pwm_generic_info info;
     struct motor_cmd cmd = {
         .mode = MOTOR_MODE_VEL,
         .vel_des = (float)speed,
@@ -588,8 +568,15 @@ static int run_fan(int argc, char **argv)
     if (seconds < 0)
         seconds = 0;
 
-    printf("[fan] gpio=72 speed=%d%% duration=%ds\n", speed, seconds);
-    fan = motor_alloc_pwm("pwm_gpio", 72, &info);
+    if (load_peripheral_config() != 0)
+        return 1;
+
+    info.period = g_peripheral_config.fan.period;
+    info.duty_cycle = g_peripheral_config.fan.duty_cycle;
+
+    printf("[fan] gpio=%u speed=%d%% duration=%ds\n",
+        g_peripheral_config.fan.gpio, speed, seconds);
+    fan = motor_alloc_pwm("pwm_gpio", g_peripheral_config.fan.gpio, &info);
     if (!fan) {
         fprintf(stderr, "motor_alloc_pwm(pwm_gpio) failed\n");
         return 1;
@@ -616,10 +603,15 @@ static int run_light_sensor(int argc, char **argv)
     int count = parse_int(argc > 0 ? argv[0] : NULL, 20);
     struct light_sensor_dev *dev;
 
+    if (load_peripheral_config() != 0)
+        return 1;
+
     printf("[light_sensor] dev=%s addr=0x%02X\n",
-        k_default_i2c_dev, k_light_sensor_i2c_addr);
-    dev = light_sensor_alloc_i2c("W1160:als0",
-        k_default_i2c_dev, k_light_sensor_i2c_addr);
+        g_peripheral_config.light_sensor.i2c_dev,
+        g_peripheral_config.light_sensor.i2c_addr);
+    dev = light_sensor_alloc_i2c(g_peripheral_config.light_sensor.name,
+        g_peripheral_config.light_sensor.i2c_dev,
+        g_peripheral_config.light_sensor.i2c_addr);
     if (!dev) {
         fprintf(stderr, "light_sensor_alloc_i2c failed\n");
         return 1;

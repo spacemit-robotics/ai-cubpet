@@ -2,6 +2,7 @@
 #define CUBPET_MOTOR_ACTIONS_HPP
 
 #include "cubpet_keywords.hpp"
+#include "cubpet_peripheral_config.h"
 
 namespace ai_cubpet {
 
@@ -14,6 +15,7 @@ public:
 
 private:
     bool initialized_ = false;
+    cubpet_peripheral_config config_{};
 };
 
 }  // namespace ai_cubpet

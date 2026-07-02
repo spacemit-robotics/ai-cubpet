@@ -5,7 +5,7 @@
 #include <webrtc/modules/audio_processing/include/audio_processing.h>
 
 #include <algorithm>
-#include <chrono>
+#include <chrono>  // NOLINT(build/c++11)
 #include <cmath>
 #include <cstring>
 #include <iostream>
