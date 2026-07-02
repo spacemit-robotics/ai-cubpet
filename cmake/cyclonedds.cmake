@@ -55,10 +55,19 @@ fetch_thirdparty(NAME cyclonedds-cxx
 
 set(_CYCLONEDDS_BUILD_DIR "${_AI_CUBPET_TP_CACHE}/cyclonedds/build")
 set(_CYCLONEDDS_CXX_BUILD_DIR "${_AI_CUBPET_TP_CACHE}/cyclonedds-cxx/build")
+set(_CYCLONEDDS_HOST_BUILD_DIR "${_AI_CUBPET_TP_CACHE}/cyclonedds/build-host")
+set(_CYCLONEDDS_CXX_HOST_BUILD_DIR "${_AI_CUBPET_TP_CACHE}/cyclonedds-cxx/build-host")
 set(_CYCLONEDDS_CONFIG
     "${AI_CUBPET_CYCLONEDDS_INSTALL_PREFIX}/lib/cmake/CycloneDDS/CycloneDDSConfig.cmake")
 set(_CYCLONEDDS_CXX_CONFIG
     "${AI_CUBPET_CYCLONEDDS_INSTALL_PREFIX}/lib/cmake/CycloneDDS-CXX/CycloneDDS-CXXConfig.cmake")
+if(DEFINED ENV{SROBOTIS_CROSS_HOST_PREFIX} AND NOT "$ENV{SROBOTIS_CROSS_HOST_PREFIX}" STREQUAL "")
+  set(_AI_CUBPET_HOST_TOOLS_PREFIX "$ENV{SROBOTIS_CROSS_HOST_PREFIX}")
+else()
+  set(_AI_CUBPET_HOST_TOOLS_PREFIX "${_AI_CUBPET_TP_CACHE}/host")
+endif()
+set(_CYCLONEDDS_HOST_IDLC "${_AI_CUBPET_HOST_TOOLS_PREFIX}/bin/idlc")
+set(_CYCLONEDDS_HOST_IDLCXX_LIB "${_AI_CUBPET_HOST_TOOLS_PREFIX}/lib/libcycloneddsidlcxx.so")
 
 if(DEFINED ENV{PARALLEL_JOBS} AND NOT "$ENV{PARALLEL_JOBS}" STREQUAL "")
   set(_CYCLONEDDS_BUILD_JOBS "$ENV{PARALLEL_JOBS}")
@@ -66,6 +75,20 @@ elseif(DEFINED ENV{CMAKE_BUILD_PARALLEL_LEVEL} AND NOT "$ENV{CMAKE_BUILD_PARALLE
   set(_CYCLONEDDS_BUILD_JOBS "$ENV{CMAKE_BUILD_PARALLEL_LEVEL}")
 else()
   set(_CYCLONEDDS_BUILD_JOBS "4")
+endif()
+
+set(_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS "")
+set(_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW "")
+if(DEFINED ENV{SROBOTIS_CMAKE_EXTRA_ARGS} AND NOT "$ENV{SROBOTIS_CMAKE_EXTRA_ARGS}" STREQUAL "")
+  set(_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW "$ENV{SROBOTIS_CMAKE_EXTRA_ARGS}")
+elseif(DEFINED SROBOTIS_CMAKE_EXTRA_ARGS AND NOT "${SROBOTIS_CMAKE_EXTRA_ARGS}" STREQUAL "")
+  set(_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW "${SROBOTIS_CMAKE_EXTRA_ARGS}")
+endif()
+if(NOT "${_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW}" STREQUAL "")
+  string(REPLACE ";" "\\;" _AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW
+         "${_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW}")
+  string(REPLACE "\n" ";" _AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS
+         "${_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS_RAW}")
 endif()
 
 function(_ai_cubpet_run_cyclonedds_step desc)
@@ -76,13 +99,54 @@ function(_ai_cubpet_run_cyclonedds_step desc)
   endif()
 endfunction()
 
+if(CMAKE_CROSSCOMPILING)
+  if(NOT EXISTS "${_CYCLONEDDS_HOST_IDLC}" OR NOT EXISTS "${_CYCLONEDDS_HOST_IDLCXX_LIB}")
+    file(REMOVE_RECURSE "${_CYCLONEDDS_HOST_BUILD_DIR}" "${_CYCLONEDDS_CXX_HOST_BUILD_DIR}")
+    _ai_cubpet_run_cyclonedds_step("Configuring CycloneDDS host IDL tools"
+      "${CMAKE_COMMAND}" -S "${_CYCLONEDDS_SOURCE_DIR}" -B "${_CYCLONEDDS_HOST_BUILD_DIR}"
+        "-DCMAKE_BUILD_TYPE=Release"
+        "-DCMAKE_INSTALL_PREFIX=${_AI_CUBPET_HOST_TOOLS_PREFIX}"
+        "-DCMAKE_C_COMPILER=/usr/bin/cc"
+        "-DCMAKE_CXX_COMPILER=/usr/bin/c++"
+        "-DCMAKE_MAKE_PROGRAM=/usr/bin/make"
+        "-DBUILD_IDLC=ON"
+        "-DBUILD_EXAMPLES=OFF"
+        "-DBUILD_TESTING=OFF")
+    _ai_cubpet_run_cyclonedds_step("Building CycloneDDS host IDL tools"
+      "${CMAKE_COMMAND}" --build "${_CYCLONEDDS_HOST_BUILD_DIR}" --parallel "${_CYCLONEDDS_BUILD_JOBS}")
+    _ai_cubpet_run_cyclonedds_step("Installing CycloneDDS host IDL tools"
+      "${CMAKE_COMMAND}" --install "${_CYCLONEDDS_HOST_BUILD_DIR}")
+
+    _ai_cubpet_run_cyclonedds_step("Configuring CycloneDDS-CXX host IDL backend"
+      "${CMAKE_COMMAND}" -S "${_CYCLONEDDS_CXX_SOURCE_DIR}" -B "${_CYCLONEDDS_CXX_HOST_BUILD_DIR}"
+        "-DCMAKE_BUILD_TYPE=Release"
+        "-DCMAKE_INSTALL_PREFIX=${_AI_CUBPET_HOST_TOOLS_PREFIX}"
+        "-DCMAKE_PREFIX_PATH=${_AI_CUBPET_HOST_TOOLS_PREFIX}"
+        "-DCMAKE_C_COMPILER=/usr/bin/cc"
+        "-DCMAKE_CXX_COMPILER=/usr/bin/c++"
+        "-DCMAKE_MAKE_PROGRAM=/usr/bin/make"
+        "-DBUILD_DDSLIB=OFF"
+        "-DBUILD_IDLLIB=ON"
+        "-DBUILD_EXAMPLES=OFF"
+        "-DBUILD_TESTING=OFF")
+    _ai_cubpet_run_cyclonedds_step("Building CycloneDDS-CXX host IDL backend"
+      "${CMAKE_COMMAND}" --build "${_CYCLONEDDS_CXX_HOST_BUILD_DIR}" --parallel "${_CYCLONEDDS_BUILD_JOBS}")
+    _ai_cubpet_run_cyclonedds_step("Installing CycloneDDS-CXX host IDL backend"
+      "${CMAKE_COMMAND}" --install "${_CYCLONEDDS_CXX_HOST_BUILD_DIR}")
+  endif()
+
+  list(PREPEND CMAKE_PROGRAM_PATH "${_AI_CUBPET_HOST_TOOLS_PREFIX}/bin")
+  list(PREPEND CMAKE_LIBRARY_PATH "${_AI_CUBPET_HOST_TOOLS_PREFIX}/lib")
+endif()
+
 if(AI_CUBPET_FORCE_CYCLONEDDS_REBUILD OR NOT EXISTS "${_CYCLONEDDS_CONFIG}")
   _ai_cubpet_run_cyclonedds_step("Configuring CycloneDDS"
     "${CMAKE_COMMAND}" -S "${_CYCLONEDDS_SOURCE_DIR}" -B "${_CYCLONEDDS_BUILD_DIR}"
       "-DCMAKE_BUILD_TYPE=Release"
       "-DCMAKE_INSTALL_PREFIX=${AI_CUBPET_CYCLONEDDS_INSTALL_PREFIX}"
       "-DBUILD_EXAMPLES=OFF"
-      "-DBUILD_TESTING=OFF")
+      "-DBUILD_TESTING=OFF"
+      ${_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS})
   _ai_cubpet_run_cyclonedds_step("Building CycloneDDS"
     "${CMAKE_COMMAND}" --build "${_CYCLONEDDS_BUILD_DIR}" --parallel "${_CYCLONEDDS_BUILD_JOBS}")
   _ai_cubpet_run_cyclonedds_step("Installing CycloneDDS"
@@ -96,7 +160,8 @@ if(AI_CUBPET_FORCE_CYCLONEDDS_REBUILD OR NOT EXISTS "${_CYCLONEDDS_CXX_CONFIG}")
       "-DCMAKE_INSTALL_PREFIX=${AI_CUBPET_CYCLONEDDS_INSTALL_PREFIX}"
       "-DCMAKE_PREFIX_PATH=${AI_CUBPET_CYCLONEDDS_INSTALL_PREFIX}"
       "-DBUILD_EXAMPLES=OFF"
-      "-DBUILD_TESTING=OFF")
+      "-DBUILD_TESTING=OFF"
+      ${_AI_CUBPET_EXTERNAL_PROJECT_CMAKE_ARGS})
   _ai_cubpet_run_cyclonedds_step("Building CycloneDDS-CXX"
     "${CMAKE_COMMAND}" --build "${_CYCLONEDDS_CXX_BUILD_DIR}" --parallel "${_CYCLONEDDS_BUILD_JOBS}")
   _ai_cubpet_run_cyclonedds_step("Installing CycloneDDS-CXX"
