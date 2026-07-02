@@ -36,11 +36,17 @@ find_program(MESON_EXE meson REQUIRED)
 find_program(NINJA_EXE ninja REQUIRED)
 
 include(ExternalProject)
+set(_WEBRTC_MESON_SETUP_ARGS
+  setup <BINARY_DIR> <SOURCE_DIR>
+  --buildtype=release
+)
+if(DEFINED SROBOTIS_MESON_CROSS_FILE AND NOT "${SROBOTIS_MESON_CROSS_FILE}" STREQUAL "")
+  list(APPEND _WEBRTC_MESON_SETUP_ARGS --cross-file "${SROBOTIS_MESON_CROSS_FILE}")
+endif()
 ExternalProject_Add(webrtc_ap_ep
   SOURCE_DIR "${_WEBRTC_SOURCE_DIR}"
   BINARY_DIR "${_WEBRTC_BINARY_DIR}"
-  CONFIGURE_COMMAND ${MESON_EXE} setup <BINARY_DIR> <SOURCE_DIR>
-    --buildtype=release
+  CONFIGURE_COMMAND ${MESON_EXE} ${_WEBRTC_MESON_SETUP_ARGS}
   BUILD_COMMAND ${NINJA_EXE} -C <BINARY_DIR>
   INSTALL_COMMAND ""
   BUILD_BYPRODUCTS "${_WEBRTC_BINARY_DIR}/webrtc/modules/audio_processing/libwebrtc-audio-processing-2.so"
