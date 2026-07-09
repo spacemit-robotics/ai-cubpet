@@ -11,6 +11,7 @@ public:
     bool Initialize();
     void Shutdown();
 
+    bool Supports(VoiceIntent intent) const;
     bool Execute(VoiceIntent intent, bool has_doa, float doa_angle_degrees);
 
 private:

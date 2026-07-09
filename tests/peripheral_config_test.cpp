@@ -67,23 +67,33 @@ void TestLoadMusePiPro()
 
     assert(config.gpio_input_count == 4);
     ExpectStringEq(config.gpio_inputs[0].name, "touch1");
-    ExpectStringEq(config.gpio_inputs[0].role, "touch1");
+    ExpectStringEq(config.gpio_inputs[0].role, "head");
     ExpectStringEq(config.gpio_inputs[0].chip_name, "gpiochip0");
     assert(config.gpio_inputs[0].line_offset == 33);
     assert(config.gpio_inputs[0].active_high == 1);
     ExpectStringEq(config.gpio_inputs[1].name, "touch2");
+    ExpectStringEq(config.gpio_inputs[1].role, "nose");
     assert(config.gpio_inputs[1].line_offset == 34);
     ExpectStringEq(config.gpio_inputs[2].name, "touch3");
+    ExpectStringEq(config.gpio_inputs[2].role, "foot");
     assert(config.gpio_inputs[2].line_offset == 35);
     ExpectStringEq(config.gpio_inputs[3].name, "wake");
     ExpectStringEq(config.gpio_inputs[3].role, "wake");
     assert(config.gpio_inputs[3].line_offset == 92);
+    assert(config.gpio_inputs[3].active_high == 0);
 
     ExpectStringEq(config.pm.charger_node, "ip2317-charger");
     ExpectStringEq(config.pm.capacity_node, "cw-bat");
 
     assert(config.fan.gpio == 91);
     assert(config.fan.period == 100000);
+
+    ExpectStringEq(config.led.type, "spi-ws2812");
+    ExpectStringEq(config.led.name, "spi-ws2812:cubpet_rgb");
+    ExpectStringEq(config.led.dev_path, "/dev/spidev2.0");
+    assert(config.led.num_leds == 23);
+    assert(config.led.spi_speed_hz == 6400000);
+    assert(config.led.reset_bytes == 80);
 }
 
 void TestNoMatch()

@@ -127,6 +127,26 @@ bool CubpetMotorActions::Initialize()
     return true;
 }
 
+bool CubpetMotorActions::Supports(VoiceIntent intent) const
+{
+    if (!initialized_) {
+        return false;
+    }
+
+    switch (intent) {
+    case VoiceIntent::kHeadUp:
+    case VoiceIntent::kNodHead:
+        return cubpet_peripheral_find_motor(&config_, "head_ud") != nullptr;
+    case VoiceIntent::kShakeHead:
+        return cubpet_peripheral_find_motor(&config_, "head_lr") != nullptr;
+    case VoiceIntent::kWagTail:
+        return cubpet_peripheral_find_motor(&config_, "tail_lr") != nullptr;
+    case VoiceIntent::kUnknown:
+    default:
+        return false;
+    }
+}
+
 void CubpetMotorActions::Shutdown()
 {
     if (initialized_) {
@@ -153,6 +173,11 @@ bool CubpetMotorActions::Execute(VoiceIntent intent,
 
     switch (intent) {
     case VoiceIntent::kHeadUp: {
+        if (!Supports(intent)) {
+            std::cout << "[motor] action=" << VoiceIntentName(intent)
+                    << " skipped: motor not configured" << std::endl;
+            return true;
+        }
         bool ok = RunRohsSequence(
             cubpet_peripheral_find_motor(&config_, "head_ud"),
             {kHeadUpAngle, kCenterAngle}, kMotorSpeed);
@@ -165,12 +190,27 @@ bool CubpetMotorActions::Execute(VoiceIntent intent,
         return ok;
     }
     case VoiceIntent::kNodHead:
+        if (!Supports(intent)) {
+            std::cout << "[motor] action=" << VoiceIntentName(intent)
+                    << " skipped: motor not configured" << std::endl;
+            return true;
+        }
         return RunRohsSequence(cubpet_peripheral_find_motor(&config_, "head_ud"),
             {kHeadDownAngle, kHeadUpAngle, kHeadDownAngle, kCenterAngle}, kMotorSpeed);
     case VoiceIntent::kShakeHead:
+        if (!Supports(intent)) {
+            std::cout << "[motor] action=" << VoiceIntentName(intent)
+                    << " skipped: motor not configured" << std::endl;
+            return true;
+        }
         return RunRohsSequence(cubpet_peripheral_find_motor(&config_, "head_lr"),
             {75.0f, 105.0f, 75.0f, kCenterAngle}, kMotorSpeed);
     case VoiceIntent::kWagTail:
+        if (!Supports(intent)) {
+            std::cout << "[motor] action=" << VoiceIntentName(intent)
+                    << " skipped: motor not configured" << std::endl;
+            return true;
+        }
         return RunRohsSequence(cubpet_peripheral_find_motor(&config_, "tail_lr"),
             {75.0f, 105.0f, kCenterAngle}, kMotorSpeed);
     case VoiceIntent::kUnknown:

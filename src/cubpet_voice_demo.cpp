@@ -1,12 +1,22 @@
 #include "cubpet_voice_demo.hpp"
 
 #include "cubpet_audio_pipeline.hpp"
+#include "cubpet_action_rate_limiter.hpp"
+#include "cubpet_action_controller.hpp"
 #ifdef AI_CUBPET_USE_WEBRTC_AEC
 #include "cubpet_aec_pipeline.hpp"
 #endif
 #include "cubpet_doa_runtime.hpp"
+#include "cubpet_environment_monitors.hpp"
 #include "cubpet_keywords.hpp"
+#include "cubpet_led_controller.hpp"
 #include "cubpet_motor_actions.hpp"
+#include "cubpet_peripheral_manager.hpp"
+#include "cubpet_toy_state_machine.hpp"
+#include "cubpet_touch_gpio_monitor.hpp"
+#include "cubpet_voice_interaction_gate.hpp"
+#include "cubpet_wake_gpio_monitor.hpp"
+#include "cubpet_wifi_provisioning.hpp"
 #ifdef AI_CUBPET_USE_DDS
 #include "cubpet_ui_publisher.hpp"
 #endif
@@ -32,6 +42,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -57,6 +68,9 @@ constexpr int kDefaultFramesPerBuffer = 480;
 constexpr int kPlaybackSampleRate = 16000;
 constexpr int kPlaybackChannels = 2;
 constexpr size_t kVadFrameSize = 512;
+constexpr auto kContinuousIdleTimeout = std::chrono::minutes(3);
+constexpr auto kStateTimerInterval = std::chrono::seconds(1);
+constexpr auto kMotorActionInterval = std::chrono::seconds(2);
 
 std::atomic<bool> g_running{true};
 
@@ -179,6 +193,9 @@ struct VoiceDemoOptions {
     float agc_max_output_noise_level_dbfs = -50.0f;
     bool warmup = true;
     bool list_devices = false;
+    bool enable_wake_gpio = true;
+    bool enable_touch_gpio = true;
+    bool enable_environment_monitors = true;
     bool enable_playback = true;
     std::string audio_dir;
     std::string test_playback_file;
@@ -244,6 +261,9 @@ void PrintUsage(const char* argv0)
         << "  --model-dir <DIR>           SenseVoice model directory\n"
         << "  --save-wav <FILE>           Save ASR input 16k mono PCM to WAV\n"
         << "  --save-raw-wav <FILE>       Save raw mic speech channel 16k mono PCM to WAV\n"
+        << "  --no-wake-gpio              Disable hardware wake GPIO monitoring\n"
+        << "  --no-touch-gpio             Disable touch GPIO monitoring\n"
+        << "  --no-environment-monitors   Disable NFC/light/PM/G-sensor/fan monitors\n"
         << "  --no-warmup                 Skip ASR warmup\n"
         << "  -h, --help                  Show this help\n";
 }
@@ -783,6 +803,9 @@ struct Utterance {
     float doa_angle = 90.0f;
     float doa_confidence = 0.0f;
     float max_vad_prob = 0.0f;
+    bool asr_allowed = false;
+    ToyState gate_state = ToyState::kBooting;
+    ConversationMode gate_mode = ConversationMode::kWakeTriggered;
 };
 
 class UtteranceQueue {
@@ -1815,6 +1838,18 @@ int RunVoiceDemo(int argc, char** argv)
             options.doa_flip = true;
             continue;
         }
+        if (std::strcmp(arg, "--no-wake-gpio") == 0) {
+            options.enable_wake_gpio = false;
+            continue;
+        }
+        if (std::strcmp(arg, "--no-touch-gpio") == 0) {
+            options.enable_touch_gpio = false;
+            continue;
+        }
+        if (std::strcmp(arg, "--no-environment-monitors") == 0) {
+            options.enable_environment_monitors = false;
+            continue;
+        }
         if (std::strcmp(arg, "--no-warmup") == 0) {
             options.warmup = false;
             continue;
@@ -2058,8 +2093,30 @@ int RunVoiceDemo(int argc, char** argv)
     std::vector<int16_t> saved_capture;
     std::vector<int16_t> saved_raw_capture;
 
+    ToyStateMachine toy_state_machine;
+    toy_state_machine.HandleEvent(ToyEvent::BootComplete());
+    VoiceInteractionGate voice_gate(std::chrono::seconds(12));
+    std::mutex toy_state_mutex;
+
     CubpetMotorActions motor_actions;
     const bool actions_enabled = motor_actions.Initialize();
+    CubpetLedController led_controller;
+    bool led_enabled = false;
+    ActionRateLimiter action_rate_limiter(kMotorActionInterval);
+    CubpetWifiProvisioningRuntime wifi_provisioning;
+    EnvironmentMonitorSet environment_monitors;
+    std::atomic<bool> environment_monitors_active{false};
+    std::mutex continuous_activity_mutex;
+    auto continuous_last_activity = std::chrono::steady_clock::now();
+    auto mark_continuous_activity = [&]() {
+        std::lock_guard<std::mutex> lock(continuous_activity_mutex);
+        continuous_last_activity = std::chrono::steady_clock::now();
+    };
+    auto continuous_idle_expired = [&]() {
+        std::lock_guard<std::mutex> lock(continuous_activity_mutex);
+        return std::chrono::steady_clock::now() - continuous_last_activity >=
+            kContinuousIdleTimeout;
+    };
 #ifdef AI_CUBPET_USE_DDS
     CubpetUiPublisher ui_publisher;
     const bool ui_dds_enabled = options.enable_ui_dds && ui_publisher.Initialize();
@@ -2104,9 +2161,6 @@ int RunVoiceDemo(int argc, char** argv)
         if (intent == VoiceIntent::kUnknown) {
             return;
         }
-        action_queue.Push({intent, has_doa, doa_angle});
-        std::cout << Timestamp() << " [ACTION] queued "
-                << VoiceIntentName(intent) << std::endl;
         if (options.enable_playback) {
             enqueue_intent_audio(
                 intent, ResolveAudioPath(VoiceIntentAudioPath(intent), options.audio_dir));
@@ -2116,7 +2170,361 @@ int RunVoiceDemo(int argc, char** argv)
             ui_publisher.PublishGif(VoiceIntentGifPath(intent));
         }
 #endif
+        if (!actions_enabled) {
+            return;
+        }
+        if (!motor_actions.Supports(intent)) {
+            std::cout << Timestamp() << " [ACTION] motor skipped unsupported "
+                    << VoiceIntentName(intent) << std::endl;
+            return;
+        }
+        if (!action_rate_limiter.ShouldRunMotor(intent, std::chrono::steady_clock::now())) {
+            std::cout << Timestamp() << " [ACTION] motor rate_limited "
+                    << VoiceIntentName(intent) << std::endl;
+            return;
+        }
+        action_queue.Push({intent, has_doa, doa_angle});
+        std::cout << Timestamp() << " [ACTION] queued motor "
+                << VoiceIntentName(intent) << std::endl;
     };
+
+    auto queue_motor_only = [&](VoiceIntent intent, bool has_doa, float doa_angle) {
+        if (intent == VoiceIntent::kUnknown) {
+            return;
+        }
+        if (!actions_enabled) {
+            return;
+        }
+        if (!motor_actions.Supports(intent)) {
+            std::cout << Timestamp() << " [ACTION] motor skipped unsupported "
+                    << VoiceIntentName(intent) << std::endl;
+            return;
+        }
+        if (!action_rate_limiter.ShouldRunMotor(intent, std::chrono::steady_clock::now())) {
+            std::cout << Timestamp() << " [ACTION] motor rate_limited "
+                    << VoiceIntentName(intent) << std::endl;
+            return;
+        }
+        action_queue.Push({intent, has_doa, doa_angle});
+        std::cout << Timestamp() << " [ACTION] queued motor-only "
+                << VoiceIntentName(intent) << std::endl;
+    };
+
+    std::function<void(const WifiProvisioningResult&)> handle_wifi_provisioning_result;
+    std::function<void(ToyAction, bool, float)> run_product_action;
+    run_product_action = [&](ToyAction action, bool has_doa, float doa_angle) {
+        const ActionMedia media = ActionController::ResolveActionMedia(action);
+        std::cout << Timestamp() << " [TOY] action=" << ToyActionName(action)
+                << " media_intent=" << VoiceIntentName(media.intent) << std::endl;
+        if (action == ToyAction::kStartProvisioning) {
+            if (environment_monitors_active.load()) {
+                environment_monitors.SetFanSpeed(35);
+            }
+            const auto status = wifi_provisioning.Start(WifiProvisioningConfig{},
+                [](const std::string& line) {
+                    std::cout << Timestamp() << " " << line << std::endl;
+                },
+                handle_wifi_provisioning_result);
+            std::cout << Timestamp() << " [wifi][linkd] start "
+                    << (status.started ? "started" :
+                        (status.already_running ? "already_running" : "failed"))
+                    << " message=" << status.message << std::endl;
+        } else if (action == ToyAction::kConversationStart) {
+            mark_continuous_activity();
+            if (environment_monitors_active.load()) {
+                environment_monitors.SetFanSpeed(35);
+            }
+        } else if (action == ToyAction::kIdle || action == ToyAction::kWifiConnected ||
+                action == ToyAction::kWifiError || action == ToyAction::kConversationStop ||
+                action == ToyAction::kSleep || action == ToyAction::kLowBattery ||
+                action == ToyAction::kFallDetected) {
+            if (environment_monitors_active.load()) {
+                environment_monitors.StopFan();
+            }
+            if (wifi_provisioning.IsRunning()) {
+                wifi_provisioning.Stop([](const std::string& line) {
+                    std::cout << Timestamp() << " " << line << std::endl;
+                });
+            }
+        }
+        if (media.intent != VoiceIntent::kUnknown) {
+            queue_intent(media.intent, has_doa, doa_angle);
+        }
+        if (options.enable_playback && !media.audio_path.empty()) {
+            enqueue_intent_audio(VoiceIntent::kUnknown,
+                ResolveAudioPath(media.audio_path, options.audio_dir));
+        }
+#ifdef AI_CUBPET_USE_DDS
+        if (ui_dds_enabled && !media.gif_path.empty()) {
+            ui_publisher.PublishGif(media.gif_path);
+        }
+#endif
+        if (media.motor_intent != VoiceIntent::kUnknown &&
+                media.motor_intent != media.intent) {
+            queue_motor_only(media.motor_intent, has_doa, doa_angle);
+        }
+        if (media.led.enabled && led_enabled) {
+            led_controller.PlayCue(media.led);
+        } else if (media.led.enabled) {
+            std::cout << Timestamp() << " [led] cue skipped: led disabled"
+                    << std::endl;
+        }
+    };
+
+    handle_wifi_provisioning_result = [&](const WifiProvisioningResult& result) {
+        ToyReaction reaction;
+        {
+            std::lock_guard<std::mutex> lock(toy_state_mutex);
+            reaction = toy_state_machine.HandleEvent(
+                result.success ? ToyEvent::WifiConnected() : ToyEvent::WifiError());
+        }
+        std::cout << Timestamp() << " [TOY] wifi_provisioning_result="
+                << (result.success ? "connected" : "failed")
+                << " ssid=" << (result.ssid.empty() ? "--" : result.ssid)
+                << " ip=" << (result.ip_addr.empty() ? "--" : result.ip_addr)
+                << " reason=\"" << result.message << "\""
+                << " state=" << ToyStateName(reaction.state)
+                << " wifi=" << WifiStateName(reaction.wifi_state)
+                << " mode=" << ConversationModeName(reaction.conversation_mode)
+                << " handled=" << (reaction.handled ? "yes" : "no") << std::endl;
+        if (reaction.action != ToyAction::kNone) {
+            run_product_action(reaction.action, false, 90.0f);
+        }
+    };
+
+    auto handle_product_command = [&](ProductCommand command,
+                                    bool has_doa,
+                                    float doa_angle) {
+        ToyEvent event;
+        switch (command) {
+        case ProductCommand::kStartProvisioning:
+            event = ToyEvent::StartProvisioning("voice");
+            break;
+        case ProductCommand::kExitProvisioning:
+            event = ToyEvent::ExitProvisioning();
+            break;
+        case ProductCommand::kEnterContinuousConversation:
+            event = ToyEvent::EnterContinuousConversation();
+            break;
+        case ProductCommand::kExitContinuousConversation:
+            event = ToyEvent::ExitContinuousConversation("voice");
+            break;
+        case ProductCommand::kSleep:
+            event = ToyEvent::Sleep();
+            break;
+        case ProductCommand::kWake:
+        case ProductCommand::kUnknown:
+        default:
+            return false;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        ToyReaction reaction;
+        {
+            std::lock_guard<std::mutex> lock(toy_state_mutex);
+            reaction = toy_state_machine.HandleEvent(event);
+            if (reaction.handled) {
+                voice_gate.NotifyProductCommandHandled(command, now);
+            }
+        }
+        std::cout << Timestamp() << " [TOY] command=" << ProductCommandName(command)
+                << " state=" << ToyStateName(reaction.state)
+                << " wifi=" << WifiStateName(reaction.wifi_state)
+                << " mode=" << ConversationModeName(reaction.conversation_mode)
+                << " handled=" << (reaction.handled ? "yes" : "no") << std::endl;
+        if (reaction.action != ToyAction::kNone) {
+            run_product_action(reaction.action, has_doa, doa_angle);
+        }
+        return reaction.handled;
+    };
+
+    auto handle_hardware_wake = [&]() {
+        const auto now = std::chrono::steady_clock::now();
+        ToyReaction reaction;
+        {
+            std::lock_guard<std::mutex> lock(toy_state_mutex);
+            reaction = toy_state_machine.HandleEvent(ToyEvent::Wake("gpio"));
+            if (reaction.handled) {
+                voice_gate.NotifyWake(now);
+            }
+        }
+        std::cout << Timestamp() << " [TOY] wake source=gpio"
+                << " state=" << ToyStateName(reaction.state)
+                << " wifi=" << WifiStateName(reaction.wifi_state)
+                << " mode=" << ConversationModeName(reaction.conversation_mode)
+                << " handled=" << (reaction.handled ? "yes" : "no") << std::endl;
+        if (reaction.action != ToyAction::kNone) {
+            run_product_action(reaction.action, false, 90.0f);
+        }
+    };
+
+    auto handle_peripheral_event = [&](const PeripheralEvent& event) {
+        ToyEvent toy_event;
+        std::ostringstream detail;
+        if (event.type == PeripheralEventType::kTouch) {
+            toy_event = ToyEvent::Touch(event.role, event.long_press);
+            detail << "role=" << event.role
+                << " long=" << (event.long_press ? "yes" : "no")
+                << " hold_ms=" << event.hold_duration.count();
+        } else if (event.type == PeripheralEventType::kTouchCombo) {
+            toy_event = ToyEvent::TouchCombo(event.roles, event.hold_duration);
+            detail << "roles=";
+            for (size_t i = 0; i < event.roles.size(); ++i) {
+                if (i > 0) {
+                    detail << "+";
+                }
+                detail << event.roles[i];
+            }
+            detail << " hold_ms=" << event.hold_duration.count();
+        } else if (event.type == PeripheralEventType::kNfc) {
+            toy_event = ToyEvent::NfcDetected(event.value);
+            detail << "uid=" << (event.value.empty() ? "--" : event.value);
+        } else if (event.type == PeripheralEventType::kLight) {
+            toy_event = ToyEvent::LightChanged(event.value);
+            detail << "level=" << (event.value.empty() ? "--" : event.value);
+        } else if (event.type == PeripheralEventType::kPower) {
+            toy_event = ToyEvent::Power(PowerStateFromPeripheralValue(event.value));
+            detail << "state=" << (event.value.empty() ? "--" : event.value);
+        } else if (event.type == PeripheralEventType::kMotion) {
+            if (event.value == "fall") {
+                toy_event = ToyEvent::MotionFall();
+            } else if (event.value == "shake") {
+                toy_event = ToyEvent::MotionShake();
+            } else {
+                return;
+            }
+            detail << "type=" << event.value;
+        } else {
+            return;
+        }
+
+        ToyReaction reaction;
+        {
+            std::lock_guard<std::mutex> lock(toy_state_mutex);
+            reaction = toy_state_machine.HandleEvent(toy_event);
+        }
+        std::cout << Timestamp() << " [TOY] peripheral="
+                << PeripheralEventTypeName(event.type)
+                << " " << detail.str()
+                << " state=" << ToyStateName(reaction.state)
+                << " wifi=" << WifiStateName(reaction.wifi_state)
+                << " mode=" << ConversationModeName(reaction.conversation_mode)
+                << " handled=" << (reaction.handled ? "yes" : "no") << std::endl;
+        if (reaction.action != ToyAction::kNone) {
+            run_product_action(reaction.action, false, 90.0f);
+        }
+    };
+
+    PeripheralManager peripheral_manager;
+    const cubpet_gpio_input_config* wake_gpio = nullptr;
+    std::vector<cubpet_gpio_input_config> touch_gpios;
+    const bool need_peripheral_config = options.enable_wake_gpio ||
+        options.enable_touch_gpio ||
+        options.enable_environment_monitors;
+    const int peripheral_rc = need_peripheral_config
+        ? peripheral_manager.LoadAuto()
+        : 0;
+    if (need_peripheral_config && peripheral_rc != 0) {
+        std::cerr << Timestamp()
+                << " [peripheral] failed to load config, rc="
+                << peripheral_rc << std::endl;
+    }
+
+    if (options.enable_wake_gpio && peripheral_rc == 0) {
+        wake_gpio = peripheral_manager.FindGpioByRole("wake");
+        if (!wake_gpio) {
+            std::cerr << Timestamp()
+                    << " [wake] role=wake not found in peripheral config"
+                    << std::endl;
+        }
+    }
+
+    if (options.enable_touch_gpio && peripheral_rc == 0) {
+        for (const std::string role : {"head", "nose", "foot"}) {
+            const auto* touch_gpio = peripheral_manager.FindGpioByRole(role);
+            if (touch_gpio) {
+                touch_gpios.push_back(*touch_gpio);
+            } else {
+                std::cerr << Timestamp()
+                        << " [touch] role=" << role
+                        << " not found in peripheral config" << std::endl;
+            }
+        }
+    }
+
+    WakeGpioMonitor wake_monitor;
+    const bool wake_monitor_enabled = options.enable_wake_gpio && wake_gpio &&
+        wake_monitor.Start(*wake_gpio, std::chrono::milliseconds(50),
+            [&]() { handle_hardware_wake(); });
+    if (options.enable_wake_gpio && !wake_monitor_enabled) {
+        std::cerr << Timestamp()
+                << " [wake] hardware wake monitor disabled; voice commands remain gated"
+                << std::endl;
+    }
+
+    TouchGpioMonitor touch_monitor;
+    const bool touch_monitor_enabled = options.enable_touch_gpio && !touch_gpios.empty() &&
+        touch_monitor.Start(touch_gpios, std::chrono::milliseconds(50),
+            [&](const PeripheralEvent& event) { handle_peripheral_event(event); });
+    if (options.enable_touch_gpio && !touch_monitor_enabled) {
+        std::cerr << Timestamp()
+                << " [touch] hardware touch monitor disabled" << std::endl;
+    }
+
+    const bool environment_monitor_enabled = options.enable_environment_monitors &&
+        peripheral_rc == 0 &&
+        environment_monitors.Start(peripheral_manager.config(), EnvironmentMonitorOptions{},
+            [&](const PeripheralEvent& event) { handle_peripheral_event(event); },
+            [](const std::string& line) {
+                std::cout << Timestamp() << " " << line << std::endl;
+            });
+    environment_monitors_active.store(environment_monitor_enabled);
+    if (options.enable_environment_monitors && !environment_monitor_enabled) {
+        std::cerr << Timestamp()
+                << " [environment] hardware monitors disabled" << std::endl;
+    }
+    if (peripheral_rc == 0) {
+        led_enabled = led_controller.Initialize(peripheral_manager.config().led);
+    }
+
+    std::thread state_timer_thread([&]() {
+        while (g_running) {
+            std::this_thread::sleep_for(kStateTimerInterval);
+            if (!g_running) {
+                break;
+            }
+
+            ToyReaction reaction;
+            std::string timer_name;
+            {
+                std::lock_guard<std::mutex> lock(toy_state_mutex);
+                const auto now = std::chrono::steady_clock::now();
+                const ToyState state = toy_state_machine.state();
+                if ((state == ToyState::kListening || state == ToyState::kAwake) &&
+                        !voice_gate.AllowsVad(toy_state_machine, now)) {
+                    reaction = toy_state_machine.HandleEvent(ToyEvent::ListeningTimeout());
+                    timer_name = "listening_timeout";
+                } else if (toy_state_machine.conversation_mode() ==
+                            ConversationMode::kContinuous &&
+                        continuous_idle_expired()) {
+                    reaction = toy_state_machine.HandleEvent(
+                        ToyEvent::ConversationIdleTimeout());
+                    timer_name = "continuous_idle_timeout";
+                }
+            }
+
+            if (reaction.handled) {
+                std::cout << Timestamp() << " [TOY] timer=" << timer_name
+                        << " state=" << ToyStateName(reaction.state)
+                        << " wifi=" << WifiStateName(reaction.wifi_state)
+                        << " mode=" << ConversationModeName(reaction.conversation_mode)
+                        << " handled=yes" << std::endl;
+                if (reaction.action != ToyAction::kNone) {
+                    run_product_action(reaction.action, false, 90.0f);
+                }
+            }
+        }
+    });
 
     std::thread action_thread([&]() {
         while (true) {
@@ -2144,6 +2552,19 @@ int RunVoiceDemo(int argc, char** argv)
 
             const double audio_sec =
                 utterance.audio_16k.size() / static_cast<double>(kModelSampleRate);
+            if (!utterance.asr_allowed) {
+                std::cout << Timestamp() << " [ASR] gated #" << utterance.index
+                        << ", " << std::fixed << std::setprecision(2) << audio_sec
+                        << "s state=" << ToyStateName(utterance.gate_state)
+                        << " mode=" << ConversationModeName(utterance.gate_mode)
+                        << std::endl;
+                continue;
+            }
+            if (utterance.gate_mode == ConversationMode::kContinuous ||
+                    utterance.gate_state == ToyState::kContinuousConversation) {
+                mark_continuous_activity();
+            }
+
             std::cout << Timestamp() << " [ASR] #" << utterance.index << " start, "
                     << std::fixed << std::setprecision(2) << audio_sec << "s";
             if (utterance.has_doa) {
@@ -2163,12 +2584,56 @@ int RunVoiceDemo(int argc, char** argv)
 
             if (result && !result->IsEmpty()) {
                 std::string text = result->GetText();
-                VoiceIntent intent = MatchVoiceIntent(text);
+                ProductCommand command = MatchProductCommand(text);
+                VoiceIntent intent = command == ProductCommand::kUnknown
+                    ? MatchVoiceIntent(text) : VoiceIntent::kUnknown;
                 std::cout << Timestamp() << " [ASR] #" << utterance.index << " result: \""
-                        << text << "\" intent=" << VoiceIntentName(intent)
+                        << text << "\" command=" << ProductCommandName(command)
+                        << " intent=" << VoiceIntentName(intent)
                         << " time=" << elapsed_ms << "ms" << std::endl;
-                if (intent != VoiceIntent::kUnknown) {
-                    queue_intent(intent, utterance.has_doa, utterance.doa_angle);
+                const auto now = std::chrono::steady_clock::now();
+                if (command != ProductCommand::kUnknown) {
+                    bool allowed = false;
+                    ToyState current_state = ToyState::kBooting;
+                    ConversationMode current_mode = ConversationMode::kWakeTriggered;
+                    {
+                        std::lock_guard<std::mutex> lock(toy_state_mutex);
+                        allowed = utterance.asr_allowed ||
+                            voice_gate.AllowsProductCommand(toy_state_machine, command, now);
+                        current_state = toy_state_machine.state();
+                        current_mode = toy_state_machine.conversation_mode();
+                    }
+                    if (allowed) {
+                        handle_product_command(command, utterance.has_doa, utterance.doa_angle);
+                    } else {
+                        std::cout << Timestamp() << " [VOICE] gated command="
+                                << ProductCommandName(command)
+                                << " state=" << ToyStateName(current_state)
+                                << " mode=" << ConversationModeName(current_mode)
+                                << std::endl;
+                    }
+                } else if (intent != VoiceIntent::kUnknown) {
+                    bool allowed = false;
+                    ToyState current_state = ToyState::kBooting;
+                    ConversationMode current_mode = ConversationMode::kWakeTriggered;
+                    {
+                        std::lock_guard<std::mutex> lock(toy_state_mutex);
+                        allowed = utterance.asr_allowed ||
+                            voice_gate.AllowsVoiceIntent(toy_state_machine, intent, now);
+                        current_state = toy_state_machine.state();
+                        current_mode = toy_state_machine.conversation_mode();
+                    }
+                    if (allowed) {
+                        queue_intent(intent, utterance.has_doa, utterance.doa_angle);
+                        std::lock_guard<std::mutex> lock(toy_state_mutex);
+                        voice_gate.NotifyVoiceIntentHandled(now);
+                    } else {
+                        std::cout << Timestamp() << " [VOICE] gated intent="
+                                << VoiceIntentName(intent)
+                                << " state=" << ToyStateName(current_state)
+                                << " mode=" << ConversationModeName(current_mode)
+                                << std::endl;
+                    }
                 }
             } else {
                 std::cout << Timestamp() << " [ASR] #" << utterance.index
@@ -2201,6 +2666,10 @@ int RunVoiceDemo(int argc, char** argv)
         int silence_frames = 0;
         int utterance_index = 0;
         float segment_max_vad = 0.0f;
+        bool current_utterance_asr_allowed = false;
+        ToyState current_utterance_gate_state = ToyState::kBooting;
+        ConversationMode current_utterance_gate_mode = ConversationMode::kWakeTriggered;
+        bool vad_gate_previously_open = false;
 
         auto finish_utterance = [&]() {
             if (utterance_audio.size() < min_speech_samples) {
@@ -2217,6 +2686,9 @@ int RunVoiceDemo(int argc, char** argv)
             utterance.has_doa = doa.HasAngle();
             utterance.doa_angle = doa.LatestAngleDegrees();
             utterance.doa_confidence = doa.LatestConfidence();
+            utterance.asr_allowed = current_utterance_asr_allowed;
+            utterance.gate_state = current_utterance_gate_state;
+            utterance.gate_mode = current_utterance_gate_mode;
 
             std::cout << Timestamp() << " [VAD] end #" << utterance.index
                     << " samples=" << utterance.audio_16k.size()
@@ -2232,6 +2704,7 @@ int RunVoiceDemo(int argc, char** argv)
 
             utterance_queue.Push(std::move(utterance));
             segment_max_vad = 0.0f;
+            current_utterance_asr_allowed = false;
         };
 
         while (g_running) {
@@ -2278,6 +2751,35 @@ int RunVoiceDemo(int argc, char** argv)
                 AppendToWavBuffer(&saved_raw_capture, raw_mono_16k);
             }
 
+            const auto vad_gate_now = std::chrono::steady_clock::now();
+            bool allow_vad = false;
+            ToyState vad_gate_state = ToyState::kBooting;
+            ConversationMode vad_gate_mode = ConversationMode::kWakeTriggered;
+            {
+                std::lock_guard<std::mutex> lock(toy_state_mutex);
+                allow_vad = voice_gate.AllowsVad(toy_state_machine, vad_gate_now);
+                vad_gate_state = toy_state_machine.state();
+                vad_gate_mode = toy_state_machine.conversation_mode();
+            }
+            if (!allow_vad && !speaking) {
+                vad_accumulator.clear();
+                pre_buffer.clear();
+                stereo_pre_buffer.clear();
+                utterance_audio.clear();
+                pending_end = false;
+                silence_frames = 0;
+                segment_max_vad = 0.0f;
+                current_utterance_asr_allowed = false;
+                current_utterance_gate_state = vad_gate_state;
+                current_utterance_gate_mode = vad_gate_mode;
+                if (vad_gate_previously_open) {
+                    vad->Reset();
+                    vad_gate_previously_open = false;
+                }
+                continue;
+            }
+            vad_gate_previously_open = true;
+
             auto stereo = PcmToStereoFloat(pcm, chunk.frames, chunk_channels);
             std::vector<float> stereo_16k = options.capture_rate == kModelSampleRate
                 ? std::move(stereo)
@@ -2313,6 +2815,9 @@ int RunVoiceDemo(int argc, char** argv)
                         chunk_started_speech = true;
                         pending_end = false;
                         doa.Reset();
+                        current_utterance_asr_allowed = allow_vad;
+                        current_utterance_gate_state = vad_gate_state;
+                        current_utterance_gate_mode = vad_gate_mode;
                         if (!stereo_pre_buffer.empty()) {
                             std::vector<float> stereo_preroll(
                                 stereo_pre_buffer.begin(), stereo_pre_buffer.end());
@@ -2379,6 +2884,7 @@ int RunVoiceDemo(int argc, char** argv)
     });
 
     auto stop_workers = [&]() {
+        g_running = false;
         audio_queue.Stop();
         if (processing_thread.joinable()) {
             processing_thread.join();
@@ -2391,13 +2897,21 @@ int RunVoiceDemo(int argc, char** argv)
         if (action_thread.joinable()) {
             action_thread.join();
         }
+        if (state_timer_thread.joinable()) {
+            state_timer_thread.join();
+        }
         if (duplex_audio) {
             dropped_playbacks = duplex_audio->dropped();
         }
         if (output_audio) {
             dropped_playbacks += output_audio->dropped();
         }
+        environment_monitors_active.store(false);
+        environment_monitors.Stop();
         motor_actions.Shutdown();
+        wifi_provisioning.Stop([](const std::string& line) {
+            std::cout << Timestamp() << " " << line << std::endl;
+        });
     };
 
     std::unique_ptr<AudioPipeline> audio;
@@ -2576,6 +3090,11 @@ int RunVoiceDemo(int argc, char** argv)
     }
 
     g_running = false;
+    wake_monitor.Stop();
+    touch_monitor.Stop();
+    environment_monitors_active.store(false);
+    environment_monitors.Stop();
+    led_controller.Stop();
     if (audio) {
         audio->Stop();
         audio->Close();

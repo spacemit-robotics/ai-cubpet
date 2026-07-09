@@ -256,6 +256,21 @@ void ParseGpioInput(const json& j, cubpet_gpio_input_config* out)
     out->active_high = GetBoolAsInt(j, "active_high", out->active_high);
 }
 
+void ParseLed(const json& j, cubpet_led_config* out)
+{
+    if (!out || !j.is_object()) {
+        return;
+    }
+    CopyString(out->type, sizeof(out->type), GetString(j, "type", out->type));
+    CopyString(out->name, sizeof(out->name), GetString(j, "name", out->name));
+    CopyString(out->dev_path, sizeof(out->dev_path),
+        GetString(j, "dev_path", out->dev_path));
+    out->num_leds = static_cast<unsigned int>(
+        GetInt(j, "num_leds", static_cast<int>(out->num_leds)));
+    out->spi_speed_hz = GetUint32(j, "spi_speed_hz", out->spi_speed_hz);
+    out->reset_bytes = GetUint32(j, "reset_bytes", out->reset_bytes);
+}
+
 int ParseConfigJson(const json& root, cubpet_peripheral_config* config)
 {
     if (!root.is_object() || !config) {
@@ -317,6 +332,10 @@ int ParseConfigJson(const json& root, cubpet_peripheral_config* config)
         config->fan.duty_cycle);
     }
 
+    if (const auto it = root.find("led"); it != root.end() && it->is_object()) {
+        ParseLed(*it, &config->led);
+    }
+
     return 0;
 }
 
@@ -376,6 +395,9 @@ extern "C" void cubpet_peripheral_config_init_defaults(
     config->nfc.i2c_addr = 0;
     config->light_sensor.i2c_addr = 0;
     config->g_sensor.i2c_addr = 0;
+    config->led.num_leds = 1;
+    config->led.spi_speed_hz = 6400000;
+    config->led.reset_bytes = 80;
 }
 
 extern "C" int cubpet_peripheral_config_load_for_model(

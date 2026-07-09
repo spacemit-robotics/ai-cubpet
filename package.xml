@@ -9,8 +9,15 @@
   <depend>audio</depend>
   <depend>audio_process</depend>
   <depend>asr</depend>
+  <depend>light_sensor</depend>
+  <depend>led</depend>
+  <depend>misc_io</depend>
   <depend>motor</depend>
+  <depend>nfc</depend>
+  <depend>imu</depend>
+  <depend>pm</depend>
   <depend>vad</depend>
+  <depend>wifi</depend>
 
   <system_depend realm="target" check_kind="pkg-config" check_arg="libgpiod">libgpiod-dev</system_depend>
   <system_depend realm="host" check_kind="command" check_arg="git">git</system_depend>

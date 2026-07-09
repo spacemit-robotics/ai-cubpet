@@ -11,7 +11,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 option(AI_CUBPET_BUILD_PERIPHERALS_DEMO "Build peripheral CLI demo" ON)
 option(AI_CUBPET_BUILD_VOICE_DEMO "Build local VAD/ASR/DOA voice-control demo" ON)
 option(AI_CUBPET_BUILD_UI_DEMO "Build DDS Qt UI process" ON)
+option(AI_CUBPET_BUILD_DAEMON "Build daemon launcher" ON)
 option(AI_CUBPET_BUILD_TEST_TOOLS "Build and install development smoke-test tools" OFF)
+option(AI_CUBPET_BUILD_UNIT_TESTS "Build host unit tests for product-layer logic" OFF)
 option(AI_CUBPET_USE_AEC "Enable WebRTC AEC dependency for the voice demo" ON)
 option(AI_CUBPET_USE_DDS "Enable DDS UI publisher for the voice demo" ON)
 
@@ -35,7 +37,9 @@ find_package(motor CONFIG QUIET)
 find_package(Components QUIET)
 find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
-find_package(CURL REQUIRED)
+if(AI_CUBPET_BUILD_DAEMON OR AI_CUBPET_BUILD_VOICE_DEMO)
+    find_package(CURL REQUIRED)
+endif()
 find_package(nlohmann_json QUIET)
 if(NOT TARGET nlohmann_json::nlohmann_json)
     find_path(NLOHMANN_JSON_INCLUDE_DIR NAMES nlohmann/json.hpp)
@@ -136,7 +140,7 @@ function(ai_cubpet_find_include out_var header)
     set(${out_var} "${${out_var}}" PARENT_SCOPE)
 endfunction()
 
-if(AI_CUBPET_USE_DDS)
+if(AI_CUBPET_USE_DDS AND (AI_CUBPET_BUILD_VOICE_DEMO OR AI_CUBPET_BUILD_UI_DEMO))
     include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/cyclonedds.cmake)
     find_package(CycloneDDS-CXX REQUIRED CONFIG
         PATHS "${AI_CUBPET_CYCLONEDDS_INSTALL_PREFIX}"
@@ -155,6 +159,8 @@ if(AI_CUBPET_BUILD_PERIPHERALS_DEMO)
     ai_cubpet_resolve_component(NFC_TARGET nfc)
     ai_cubpet_resolve_component(MOTOR_TARGET motor)
     ai_cubpet_resolve_component(LIGHT_SENSOR_TARGET light_sensor)
+    ai_cubpet_resolve_component(LED_TARGET led)
+    ai_cubpet_resolve_component(IMU_TARGET imu)
 
     ai_cubpet_find_library(STK_ALPS_LIB NAMES stk_alps_lib REQUIRED)
 
@@ -172,6 +178,8 @@ if(AI_CUBPET_BUILD_PERIPHERALS_DEMO)
         ${PM_TARGET}
         ${WIFI_TARGET}
         ${NFC_TARGET}
+        ${LED_TARGET}
+        ${IMU_TARGET}
         -Wl,--whole-archive
         ${MOTOR_TARGET}
         -Wl,--no-whole-archive
@@ -231,7 +239,14 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
 
     ai_cubpet_find_library(ONNXRUNTIME_LIB NAMES onnxruntime REQUIRED)
     ai_cubpet_find_include(ONNXRUNTIME_INCLUDE_DIR onnxruntime_cxx_api.h)
+    ai_cubpet_resolve_component(MISC_IO_TARGET misc_io)
+    ai_cubpet_resolve_component(WIFI_TARGET wifi)
+    ai_cubpet_resolve_component(PM_TARGET pm)
+    ai_cubpet_resolve_component(NFC_TARGET nfc)
+    ai_cubpet_resolve_component(LIGHT_SENSOR_TARGET light_sensor)
     ai_cubpet_resolve_component(MOTOR_TARGET motor)
+    ai_cubpet_resolve_component(LED_TARGET led)
+    ai_cubpet_find_library(STK_ALPS_LIB NAMES stk_alps_lib REQUIRED)
 
     if(AI_CUBPET_USE_AEC)
         include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/webrtc_audio_processing.cmake)
@@ -239,11 +254,23 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
 
     set(AI_CUBPET_VOICE_SOURCES
         src/cubpet_audio_pipeline.cpp
+        src/cubpet_action_rate_limiter.cpp
+        src/cubpet_action_controller.cpp
         src/cubpet_doa_runtime.cpp
+        src/cubpet_environment_levels.cpp
+        src/cubpet_environment_monitors.cpp
         src/cubpet_keywords.cpp
+        src/cubpet_led_controller.cpp
         src/cubpet_motor_actions.cpp
+        src/cubpet_peripheral_manager.cpp
         src/cubpet_peripheral_config.cpp
+        src/cubpet_toy_state_machine.cpp
+        src/cubpet_touch_event_aggregator.cpp
+        src/cubpet_touch_gpio_monitor.cpp
         src/cubpet_ui_publisher.cpp
+        src/cubpet_voice_interaction_gate.cpp
+        src/cubpet_wake_gpio_monitor.cpp
+        src/cubpet_wifi_provisioning.cpp
         src/cubpet_voice_demo.cpp
     )
     if(NOT AI_CUBPET_USE_DDS)
@@ -291,9 +318,16 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
         ${VAD_LIB}
         ${SILERO_VAD_LIB}
         ${DOA_LIB}
+        ${MISC_IO_TARGET}
+        ${WIFI_TARGET}
+        ${PM_TARGET}
+        ${NFC_TARGET}
+        ${LED_TARGET}
         -Wl,--whole-archive
         ${MOTOR_TARGET}
         -Wl,--no-whole-archive
+        ${LIGHT_SENSOR_TARGET}
+        ${STK_ALPS_LIB}
         ${ONNXRUNTIME_LIB}
         CURL::libcurl
         ${PORTAUDIO_LIBRARIES}
@@ -340,6 +374,7 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
         target_compile_options(ai-cubpet PRIVATE -Wall -Wextra)
         target_link_options(ai-cubpet PRIVATE -no-pie)
     endif()
+    target_compile_definitions(ai-cubpet PRIVATE AI_CUBPET_USE_WIFI_SDK)
 
     set_target_properties(ai-cubpet PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
@@ -370,6 +405,128 @@ if(AI_CUBPET_BUILD_VOICE_DEMO)
     endif()
 
     install(TARGETS ai-cubpet RUNTIME DESTINATION bin)
+endif()
+
+
+if(AI_CUBPET_BUILD_UNIT_TESTS)
+    add_executable(toy_state_machine_test
+        tests/toy_state_machine_test.cpp
+        src/cubpet_toy_state_machine.cpp
+    )
+    target_include_directories(toy_state_machine_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_executable(keywords_test
+        tests/keywords_test.cpp
+        src/cubpet_keywords.cpp
+    )
+    target_include_directories(keywords_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_executable(peripheral_config_test
+        tests/peripheral_config_test.cpp
+        src/cubpet_peripheral_config.cpp
+    )
+    target_include_directories(peripheral_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    ai_cubpet_link_nlohmann_json(peripheral_config_test)
+
+    add_executable(peripheral_manager_test
+        tests/peripheral_manager_test.cpp
+        src/cubpet_peripheral_config.cpp
+        src/cubpet_peripheral_manager.cpp
+    )
+    target_include_directories(peripheral_manager_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    ai_cubpet_link_nlohmann_json(peripheral_manager_test)
+
+    add_executable(touch_event_aggregator_test
+        tests/touch_event_aggregator_test.cpp
+        src/cubpet_peripheral_manager.cpp
+        src/cubpet_peripheral_config.cpp
+        src/cubpet_touch_event_aggregator.cpp
+    )
+    target_include_directories(touch_event_aggregator_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    ai_cubpet_link_nlohmann_json(touch_event_aggregator_test)
+
+    add_executable(action_controller_test
+        tests/action_controller_test.cpp
+        src/cubpet_action_controller.cpp
+        src/cubpet_keywords.cpp
+    )
+    target_include_directories(action_controller_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_executable(light_level_test
+        tests/light_level_test.cpp
+        src/cubpet_environment_levels.cpp
+    )
+    target_include_directories(light_level_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_executable(action_rate_limiter_test
+        tests/action_rate_limiter_test.cpp
+        src/cubpet_action_rate_limiter.cpp
+    )
+    target_include_directories(action_rate_limiter_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_executable(voice_interaction_gate_test
+        tests/voice_interaction_gate_test.cpp
+        src/cubpet_toy_state_machine.cpp
+        src/cubpet_voice_interaction_gate.cpp
+    )
+    target_include_directories(voice_interaction_gate_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    add_executable(wifi_provisioning_test
+        tests/wifi_provisioning_test.cpp
+        src/cubpet_wifi_provisioning.cpp
+    )
+    target_include_directories(wifi_provisioning_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        foreach(_test_target
+                toy_state_machine_test
+                keywords_test
+                peripheral_config_test
+                peripheral_manager_test
+                touch_event_aggregator_test
+                action_controller_test
+                light_level_test
+                action_rate_limiter_test
+                voice_interaction_gate_test
+                wifi_provisioning_test)
+            target_compile_options(${_test_target} PRIVATE -Wall -Wextra)
+        endforeach()
+    endif()
+
+    set_target_properties(
+        toy_state_machine_test
+        keywords_test
+        peripheral_config_test
+        peripheral_manager_test
+        touch_event_aggregator_test
+        action_controller_test
+        light_level_test
+        action_rate_limiter_test
+        voice_interaction_gate_test
+        wifi_provisioning_test
+        PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
+    )
 endif()
 
 if(AI_CUBPET_BUILD_UI_DEMO)
@@ -508,6 +665,7 @@ if(AI_CUBPET_BUILD_UI_DEMO)
     endif()
 endif()
 
+if(AI_CUBPET_BUILD_DAEMON)
 add_executable(ai_cubpet_daemon
     examples/ai_cubpet_daemon.cpp
 )
@@ -536,6 +694,8 @@ else()
 endif()
 
 install(TARGETS ai_cubpet_daemon RUNTIME DESTINATION bin)
+endif()
+
 
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY idl/ DESTINATION share/ai-cubpet/idl)

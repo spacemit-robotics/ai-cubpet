@@ -13,8 +13,20 @@ enum class VoiceIntent {
     kWagTail,
 };
 
+enum class ProductCommand {
+    kUnknown,
+    kStartProvisioning,
+    kExitProvisioning,
+    kEnterContinuousConversation,
+    kExitContinuousConversation,
+    kSleep,
+    kWake,
+};
+
 VoiceIntent MatchVoiceIntent(const std::string& transcript);
+ProductCommand MatchProductCommand(const std::string& transcript);
 const char* VoiceIntentName(VoiceIntent intent);
+const char* ProductCommandName(ProductCommand command);
 std::string VoiceIntentGifPath(VoiceIntent intent);
 std::string VoiceIntentAudioPath(VoiceIntent intent);
 

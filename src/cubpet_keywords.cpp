@@ -92,6 +92,52 @@ VoiceIntent MatchVoiceIntent(const std::string& transcript)
     return VoiceIntent::kUnknown;
 }
 
+
+ProductCommand MatchProductCommand(const std::string& transcript)
+{
+    const std::string text = NormalizeTranscript(transcript);
+    static const char* const kStartProvisioning[] = {
+        "开始配网", "进入配网", "进入配网模式", "配网模式",
+        "连接Wi-Fi", "连接wifi", "连接WiFi", "重新配网",
+        "更换Wi-Fi", "更换wifi", "配置网络", "网络配置"
+    };
+    static const char* const kExitProvisioning[] = {
+        "退出配网", "取消配网", "停止配网"
+    };
+    static const char* const kEnterContinuous[] = {
+        "进入连续对话", "连续对话", "开始连续对话",
+        "陪我聊天", "开始聊天模式", "开始聊天", "聊天模式",
+        "聊聊天", "陪我聊聊天"
+    };
+    static const char* const kExitContinuous[] = {
+        "退出聊天", "休息一下", "停止聊天", "结束聊天", "退出连续对话"
+    };
+    static const char* const kSleep[] = {
+        "去睡觉", "睡觉吧", "休息吧"
+    };
+    if (ContainsAny(text, kStartProvisioning,
+            static_cast<int>(sizeof(kStartProvisioning) / sizeof(kStartProvisioning[0])))) {
+        return ProductCommand::kStartProvisioning;
+    }
+    if (ContainsAny(text, kExitProvisioning,
+            static_cast<int>(sizeof(kExitProvisioning) / sizeof(kExitProvisioning[0])))) {
+        return ProductCommand::kExitProvisioning;
+    }
+    if (ContainsAny(text, kExitContinuous,
+            static_cast<int>(sizeof(kExitContinuous) / sizeof(kExitContinuous[0])))) {
+        return ProductCommand::kExitContinuousConversation;
+    }
+    if (ContainsAny(text, kEnterContinuous,
+            static_cast<int>(sizeof(kEnterContinuous) / sizeof(kEnterContinuous[0])))) {
+        return ProductCommand::kEnterContinuousConversation;
+    }
+    if (ContainsAny(text, kSleep,
+            static_cast<int>(sizeof(kSleep) / sizeof(kSleep[0])))) {
+        return ProductCommand::kSleep;
+    }
+    return ProductCommand::kUnknown;
+}
+
 const char* VoiceIntentName(VoiceIntent intent)
 {
     switch (intent) {
@@ -104,6 +150,28 @@ const char* VoiceIntentName(VoiceIntent intent)
     case VoiceIntent::kWagTail:
         return "wag_tail";
     case VoiceIntent::kUnknown:
+    default:
+        return "unknown";
+    }
+}
+
+
+const char* ProductCommandName(ProductCommand command)
+{
+    switch (command) {
+    case ProductCommand::kStartProvisioning:
+        return "start_provisioning";
+    case ProductCommand::kExitProvisioning:
+        return "exit_provisioning";
+    case ProductCommand::kEnterContinuousConversation:
+        return "enter_continuous_conversation";
+    case ProductCommand::kExitContinuousConversation:
+        return "exit_continuous_conversation";
+    case ProductCommand::kSleep:
+        return "sleep";
+    case ProductCommand::kWake:
+        return "wake";
+    case ProductCommand::kUnknown:
     default:
         return "unknown";
     }

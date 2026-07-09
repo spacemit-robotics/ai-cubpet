@@ -7,6 +7,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -15,6 +16,8 @@
 #include <unistd.h>
 
 #include <cubpet_peripheral_config.h>
+#include <imu.h>
+#include <led.h>
 #include <light_sensor.h>
 #include <misc_io.h>
 #include <motor.h>
@@ -23,6 +26,7 @@
 #include <wifi.h>
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define LINKD_AP_SSID_MAX_LEN 32
 
 struct rohs_motor_info {
     uint8_t motor_index;
@@ -47,7 +51,15 @@ struct pwm_generic_info {
     uint32_t duty_cycle;
 };
 
+struct led_ws2812_spi_args {
+    const char *dev_path;
+    uint32_t num_leds;
+    uint32_t spi_speed_hz;
+    uint32_t reset_bytes;
+};
+
 static struct cubpet_peripheral_config g_peripheral_config;
+static char g_linkd_ap_ssid[LINKD_AP_SSID_MAX_LEN + 1] = "AI_CUBPET_AP_LINK";
 
 static void print_usage(const char *prog)
 {
@@ -60,6 +72,8 @@ static void print_usage(const char *prog)
     printf("  %s motor [all|NAME] [speed]\n", prog);
     printf("  %s fan [speed_percent] [seconds]\n", prog);
     printf("  %s light_sensor [count]\n", prog);
+    printf("  %s g_sensor [count] [rate_hz] [shake_delta]\n", prog);
+    printf("  %s led [loops] [tick_ms]\n", prog);
 }
 
 static int parse_int(const char *text, int fallback)
@@ -274,6 +288,22 @@ static void print_mac(const uint8_t *mac)
         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+static char hex_lower(unsigned int value)
+{
+    value &= 0x0f;
+    return (char)(value < 10 ? ('0' + value) : ('a' + value - 10));
+}
+
+static void build_linkd_ap_ssid(char *ssid, size_t ssid_size,
+    const char *base, const uint8_t mac[6])
+{
+    if (!ssid || ssid_size == 0 || !base || !mac)
+        return;
+
+    snprintf(ssid, ssid_size, "%s_%c%c", base,
+        hex_lower(mac[5] >> 4), hex_lower(mac[5]));
+}
+
 static enum wifi_mode parse_wifi_mode(const char *text)
 {
     if (!text)
@@ -289,14 +319,24 @@ static enum wifi_mode parse_wifi_mode(const char *text)
 
 static void set_default_linkd_ap_config(struct wifi_ap_config *config)
 {
-    static char ssid[] = "AI_CUBPET_AP_LINK";
+    static const char ssid_base[] = "AI_CUBPET_AP_LINK";
     static char psk[] = "12345678";
+    uint8_t mac[6] = {0};
 
     if (!config)
         return;
 
     memset(config, 0, sizeof(*config));
-    config->ssid = ssid;
+    snprintf(g_linkd_ap_ssid, sizeof(g_linkd_ap_ssid), "%s", ssid_base);
+    if (wifi_get_mac(NULL, mac) == WIFI_STATUS_SUCCESS) {
+        build_linkd_ap_ssid(g_linkd_ap_ssid, sizeof(g_linkd_ap_ssid),
+            ssid_base, mac);
+    } else {
+        printf("[wifi][linkd] failed to get MAC, using SSID=%s\n",
+            g_linkd_ap_ssid);
+    }
+
+    config->ssid = g_linkd_ap_ssid;
     config->psk = psk;
     config->sec = WIFI_SEC_WPA2_PSK;
     config->ip_addr[0] = 192;
@@ -331,8 +371,9 @@ static void linkd_connect_cb(struct wifi_msg_data *msg)
     if (result->psk && *result->psk)
         param.password = result->psk;
 
-    ret = wifi_sta_remove_networks("TEST_AP_LINK");
-    printf("[wifi][linkd] remove temp AP profile: %d\n", ret);
+    ret = wifi_sta_remove_networks(g_linkd_ap_ssid);
+    printf("[wifi][linkd] remove temp AP profile %s: %d\n",
+        g_linkd_ap_ssid, ret);
 
     ret = wifi_on(WIFI_MODE_STATION);
     if (ret != WIFI_STATUS_SUCCESS)
@@ -696,6 +737,128 @@ static int run_fan(int argc, char **argv)
     return 0;
 }
 
+static void led_sleep_ms(uint32_t duration_ms)
+{
+    if (duration_ms == 0)
+        return;
+    usleep((useconds_t)duration_ms * 1000U);
+}
+
+static void run_led_ticks(struct led_dev *dev, uint32_t duration_ms, uint16_t tick_ms)
+{
+    uint32_t elapsed = 0;
+
+    if (!dev || tick_ms == 0)
+        return;
+
+    while (elapsed < duration_ms) {
+        uint16_t step = tick_ms;
+
+        if (duration_ms - elapsed < step)
+            step = (uint16_t)(duration_ms - elapsed);
+        led_tick(dev, step);
+        usleep((useconds_t)step * 1000U);
+        elapsed += step;
+    }
+}
+
+static void led_run_solid_stage(struct led_dev *dev, const char *label,
+    const struct led_color *color, uint8_t brightness, uint32_t duration_ms)
+{
+    printf("[led] %s color=(%u,%u,%u) brightness=%u duration=%ums\n",
+        label, color->r, color->g, color->b, brightness, duration_ms);
+    led_set_color(dev, color);
+    led_set_brightness(dev, brightness);
+    led_sleep_ms(duration_ms);
+}
+
+static int run_led(int argc, char **argv)
+{
+    int loops = parse_int(argc > 0 ? argv[0] : NULL, 1);
+    int tick_ms = parse_int(argc > 1 ? argv[1] : NULL, 50);
+    struct led_ws2812_spi_args args;
+    struct led_dev *dev;
+    const struct cubpet_led_config *cfg;
+
+    if (load_peripheral_config() != 0)
+        return 1;
+
+    cfg = &g_peripheral_config.led;
+    if (loops <= 0)
+        loops = 1;
+    if (tick_ms <= 0)
+        tick_ms = 50;
+    if (tick_ms > UINT16_MAX)
+        tick_ms = UINT16_MAX;
+
+    if (strcmp(cfg->type, "spi-ws2812") != 0 || cfg->name[0] == '\0' ||
+        cfg->dev_path[0] == '\0') {
+        fprintf(stderr, "[led] unsupported or missing LED config: type=%s name=%s dev=%s\n",
+            cfg->type, cfg->name, cfg->dev_path);
+        return 1;
+    }
+
+    printf("[led] board=%s type=%s name=%s dev=%s leds=%u speed=%" PRIu32
+        " reset=%" PRIu32 " loops=%d tick_ms=%d\n",
+        g_peripheral_config.board_name, cfg->type, cfg->name, cfg->dev_path,
+        cfg->num_leds, cfg->spi_speed_hz, cfg->reset_bytes, loops, tick_ms);
+
+    args.dev_path = cfg->dev_path;
+    args.num_leds = cfg->num_leds;
+    args.spi_speed_hz = cfg->spi_speed_hz;
+    args.reset_bytes = cfg->reset_bytes;
+
+    dev = led_alloc_spi(cfg->name, &args);
+    if (!dev) {
+        fprintf(stderr, "[led] led_alloc_spi failed\n");
+        return 1;
+    }
+
+    for (int i = 0; i < loops; ++i) {
+        struct led_blink_param blink = {
+            .period_ms = 800,
+            .on_ms = 200,
+            .count = 3,
+        };
+        struct led_color warm = {130, 200, 30};
+
+        printf("[led] loop %d/%d\n", i + 1, loops);
+        led_run_solid_stage(dev, "red", &LED_COLOR_RED, 128, 700);
+        led_run_solid_stage(dev, "green", &LED_COLOR_GREEN, 96, 700);
+        led_run_solid_stage(dev, "blue", &LED_COLOR_BLUE, 64, 700);
+
+        printf("[led] blink color=(255,255,255) brightness=255 period=%ums on=%ums count=%u\n",
+            blink.period_ms, blink.on_ms, blink.count);
+        led_set_color(dev, &LED_COLOR_WHITE);
+        led_set_brightness(dev, 255);
+        led_blink(dev, &blink);
+        run_led_ticks(dev, 2800, (uint16_t)tick_ms);
+
+        printf("[led] breath color=(%u,%u,%u) period=2000ms\n",
+            warm.r, warm.g, warm.b);
+        led_set_color(dev, &warm);
+        led_set_brightness(dev, 180);
+        led_breath(dev, 2000);
+        run_led_ticks(dev, 4000, (uint16_t)tick_ms);
+    }
+
+    printf("[led] off\n");
+    led_set_state(dev, false);
+    led_free(dev);
+    return 0;
+}
+
+static const char *light_level_name(uint32_t lux)
+{
+    if (lux < 400)
+        return "dark";
+    if (lux < 1000)
+        return "normal";
+    if (lux < 1600)
+        return "bright";
+    return "strong";
+}
+
 static int run_light_sensor(int argc, char **argv)
 {
     int count = parse_int(argc > 0 ? argv[0] : NULL, 20);
@@ -726,7 +889,8 @@ static int run_light_sensor(int argc, char **argv)
         int ret = light_sensor_poll(dev, &light_value);
 
         if (ret == 0) {
-            printf("[light_sensor] light=%u lux\n", light_value);
+            printf("[light_sensor] light=%u lux level=%s\n",
+                light_value, light_level_name(light_value));
         } else if (ret == -EAGAIN) {
             printf("[light_sensor] no new FIFO data\n");
         } else {
@@ -736,6 +900,80 @@ static int run_light_sensor(int argc, char **argv)
     }
 
     light_sensor_free(dev);
+    return 0;
+}
+
+static int run_g_sensor(int argc, char **argv)
+{
+    int count = parse_int(argc > 0 ? argv[0] : NULL, 50);
+    int rate_hz = parse_int(argc > 1 ? argv[1] : NULL, 10);
+    int shake_delta = parse_int(argc > 2 ? argv[2] : NULL, 120);
+    struct imu_dev *imu;
+    struct imu_config cfg = {0};
+    struct imu_data data;
+    bool have_prev = false;
+    float prev[3] = {0};
+
+    if (count <= 0)
+        count = 50;
+    if (rate_hz <= 0)
+        rate_hz = 10;
+    if (shake_delta < 0)
+        shake_delta = 120;
+
+    if (load_peripheral_config() != 0)
+        return 1;
+
+    cfg.sample_rate = (uint32_t)rate_hz;
+    cfg.mounting_matrix[0] = 1.0f;
+    cfg.mounting_matrix[4] = 1.0f;
+    cfg.mounting_matrix[8] = 1.0f;
+
+    printf("[g_sensor] name=mxc4005 selector=%s index=%u rate=%dHz shake_delta=%d\n",
+        g_peripheral_config.g_sensor.i2c_dev,
+        g_peripheral_config.g_sensor.i2c_addr,
+        rate_hz,
+        shake_delta);
+
+    imu = imu_alloc_i2c("mxc4005",
+        g_peripheral_config.g_sensor.i2c_dev,
+        g_peripheral_config.g_sensor.i2c_addr,
+        NULL);
+    if (!imu) {
+        fprintf(stderr, "imu_alloc_i2c(mxc4005) failed\n");
+        return 1;
+    }
+
+    if (imu_init(imu, &cfg) != 0) {
+        fprintf(stderr, "imu_init failed\n");
+        imu_free(imu);
+        return 1;
+    }
+
+    printf("%-14s %-12s %-12s %-12s %-12s\n",
+        "timestamp_us", "acc_x_raw", "acc_y_raw", "acc_z_raw", "event");
+    for (int i = 0; i < count; ++i) {
+        if (imu_read(imu, &data) == 0) {
+            const float dx = have_prev ? data.acc[0] - prev[0] : 0.0f;
+            const float dy = have_prev ? data.acc[1] - prev[1] : 0.0f;
+            const float dz = have_prev ? data.acc[2] - prev[2] : 0.0f;
+            const float delta = fabsf(dx) + fabsf(dy) + fabsf(dz);
+            const bool shake = have_prev && delta >= (float)shake_delta;
+
+            printf("%-14" PRIu64 " %-12.0f %-12.0f %-12.0f %-12s\n",
+                data.timestamp_us, data.acc[0], data.acc[1], data.acc[2],
+                shake ? "shake" : "--");
+            prev[0] = data.acc[0];
+            prev[1] = data.acc[1];
+            prev[2] = data.acc[2];
+            have_prev = true;
+        } else {
+            printf("[g_sensor] read failed\n");
+        }
+        usleep((useconds_t)(1000000 / rate_hz));
+    }
+
+    imu_free(imu);
     return 0;
 }
 
@@ -763,6 +1001,10 @@ int main(int argc, char **argv)
         return run_fan(argc - 2, argv + 2);
     if (strcmp(cmd, "light_sensor") == 0)
         return run_light_sensor(argc - 2, argv + 2);
+    if (strcmp(cmd, "g_sensor") == 0)
+        return run_g_sensor(argc - 2, argv + 2);
+    if (strcmp(cmd, "led") == 0)
+        return run_led(argc - 2, argv + 2);
 
     fprintf(stderr, "unknown command: %s\n", cmd);
     print_usage(argv[0]);

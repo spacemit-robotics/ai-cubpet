@@ -65,21 +65,21 @@
   "gpio_inputs": [
     {
       "name": "touch1",
-      "role": "touch1",
+      "role": "head",
       "chip_name": "gpiochip0",
       "line_offset": 33,
       "active_high": true
     },
     {
       "name": "touch2",
-      "role": "touch2",
+      "role": "nose",
       "chip_name": "gpiochip0",
       "line_offset": 34,
       "active_high": true
     },
     {
       "name": "touch3",
-      "role": "touch3",
+      "role": "foot",
       "chip_name": "gpiochip0",
       "line_offset": 35,
       "active_high": true
@@ -89,7 +89,7 @@
       "role": "wake",
       "chip_name": "gpiochip0",
       "line_offset": 92,
-      "active_high": true
+      "active_high": false
     }
   ],
   "pm": {
@@ -100,5 +100,13 @@
     "gpio": 91,
     "period": 100000,
     "duty_cycle": 0
+  },
+  "led": {
+    "type": "spi-ws2812",
+    "name": "spi-ws2812:cubpet_rgb",
+    "dev_path": "/dev/spidev2.0",
+    "num_leds": 23,
+    "spi_speed_hz": 6400000,
+    "reset_bytes": 80
   }
 }

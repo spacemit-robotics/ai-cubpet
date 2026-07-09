@@ -60,6 +60,15 @@ struct cubpet_fan_config {
     uint32_t duty_cycle;
 };
 
+struct cubpet_led_config {
+    char type[CUBPET_PERIPHERAL_NAME_LEN];
+    char name[CUBPET_PERIPHERAL_NAME_LEN];
+    char dev_path[CUBPET_PERIPHERAL_PATH_LEN];
+    unsigned int num_leds;
+    uint32_t spi_speed_hz;
+    uint32_t reset_bytes;
+};
+
 struct cubpet_peripheral_config {
     char board_name[CUBPET_PERIPHERAL_NAME_LEN];
     struct cubpet_motor_config motors[CUBPET_PERIPHERAL_MAX_MOTORS];
@@ -71,6 +80,7 @@ struct cubpet_peripheral_config {
     size_t gpio_input_count;
     struct cubpet_pm_config pm;
     struct cubpet_fan_config fan;
+    struct cubpet_led_config led;
 };
 
 void cubpet_peripheral_config_init_defaults(struct cubpet_peripheral_config* config);
