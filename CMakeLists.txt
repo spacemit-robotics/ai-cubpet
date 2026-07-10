@@ -497,6 +497,15 @@ if(AI_CUBPET_BUILD_UNIT_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     )
 
+    add_executable(daemon_config_test
+        tests/daemon_config_test.cpp
+        src/cubpet_daemon_config.cpp
+    )
+    target_include_directories(daemon_config_test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    ai_cubpet_link_nlohmann_json(daemon_config_test)
+
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         foreach(_test_target
                 toy_state_machine_test
@@ -508,7 +517,8 @@ if(AI_CUBPET_BUILD_UNIT_TESTS)
                 light_level_test
                 action_rate_limiter_test
                 voice_interaction_gate_test
-                wifi_provisioning_test)
+                wifi_provisioning_test
+                daemon_config_test)
             target_compile_options(${_test_target} PRIVATE -Wall -Wextra)
         endforeach()
     endif()
@@ -524,6 +534,7 @@ if(AI_CUBPET_BUILD_UNIT_TESTS)
         action_rate_limiter_test
         voice_interaction_gate_test
         wifi_provisioning_test
+        daemon_config_test
         PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin
     )
@@ -668,6 +679,10 @@ endif()
 if(AI_CUBPET_BUILD_DAEMON)
 add_executable(ai_cubpet_daemon
     examples/ai_cubpet_daemon.cpp
+    src/cubpet_daemon_config.cpp
+)
+target_include_directories(ai_cubpet_daemon PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
 ai_cubpet_link_nlohmann_json(ai_cubpet_daemon)
@@ -700,6 +715,9 @@ endif()
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY idl/ DESTINATION share/ai-cubpet/idl)
 install(DIRECTORY config/boards/ DESTINATION share/ai-cubpet/boards
+    FILES_MATCHING
+        PATTERN "*.json")
+install(DIRECTORY config/daemon/ DESTINATION share/ai-cubpet/daemon
     FILES_MATCHING
         PATTERN "*.json")
 

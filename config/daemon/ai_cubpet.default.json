@@ -1,0 +1,67 @@
+{
+  "agc": {
+    "enabled": true,
+    "headroom_db": 6.0,
+    "initial_gain_db": 8.0,
+    "max_gain_db": 18.0
+  },
+  "asr": {
+    "language": "zh",
+    "model_dir": null,
+    "provider": "spacemit",
+    "warmup": true
+  },
+  "audio": {
+    "channels": 4,
+    "frames": 480,
+    "input": -1,
+    "input_device_hints": [
+      "SPV Composite",
+      "USB Audio"
+    ],
+    "output": -1,
+    "output_device_hints": [
+      "SPV Composite",
+      "USB Audio"
+    ],
+    "queue_chunks": 96,
+    "rate": 16000,
+    "speech_channel": 1
+  },
+  "dds": {
+    "domain_id": 0,
+    "enabled": true
+  },
+  "debug": {
+    "save_raw_wav": false,
+    "save_raw_wav_file": "~/.cache/ai-cubpet/raw_input.wav",
+    "save_wav": false,
+    "save_wav_file": "~/.cache/ai-cubpet/asr_input.wav"
+  },
+  "log_dir": "~/.cache/ai-cubpet/logs",
+  "pid_file": "~/.cache/ai-cubpet/ai_cubpet_daemon.pid",
+  "ui": {
+    "audio_dir": null,
+    "display": ":0",
+    "enabled": true,
+    "extra_env": {
+      "COGL_DRIVER": "gles2",
+      "GDK_GL": "gles",
+      "GST_GL_PLATFORM": "egl",
+      "MESA_LOADER_DRIVER_OVERRIDE": "pvr",
+      "SAL_DISABLEGL": "1"
+    },
+    "gif_dir": null,
+    "qt_qpa_platform": "wayland",
+    "user": "initer",
+    "wayland_display": "wayland-0",
+    "xdg_runtime_dir": "/run/user/996"
+  },
+  "vad": {
+    "max_utterance_sec": 8,
+    "pre_speech_ms": 500,
+    "silence_ms": 500,
+    "stop_threshold": 0.2,
+    "threshold": 0.3
+  }
+}

@@ -1,0 +1,133 @@
+{
+  "board_name": "k1-x_Elephant_mipi",
+  "model_matches": [
+    "k1-x companion mipi robot board"
+  ],
+  "motors": [
+    {
+      "name": "head_lr",
+      "motor_index": 1,
+      "step_gpio": 46,
+      "dir_gpio": 43,
+      "enable_gpio": 42,
+      "stop_gpio": 83,
+      "current_position": -1,
+      "constant_range": 60,
+      "gpio_max_steps": -1,
+      "enable_gpio_level": false,
+      "dir_gpio_left_level": false,
+      "stop_gpio_active_level": false,
+      "range_steps": 0
+    },
+    {
+      "name": "head_ud",
+      "motor_index": 2,
+      "step_gpio": 34,
+      "dir_gpio": 35,
+      "enable_gpio": 36,
+      "stop_gpio": 82,
+      "current_position": -1,
+      "constant_range": 60,
+      "gpio_max_steps": -1,
+      "enable_gpio_level": false,
+      "dir_gpio_left_level": false,
+      "stop_gpio_active_level": false,
+      "range_steps": 0
+    },
+    {
+      "name": "tail_lr",
+      "motor_index": 3,
+      "step_gpio": 37,
+      "dir_gpio": 38,
+      "enable_gpio": 39,
+      "stop_gpio": 61,
+      "current_position": -1,
+      "constant_range": 60,
+      "gpio_max_steps": -1,
+      "enable_gpio_level": false,
+      "dir_gpio_left_level": false,
+      "stop_gpio_active_level": false,
+      "range_steps": 0
+    }
+  ],
+  "i2c_devices": {
+    "nfc": {
+      "name": "SI512:nfc0",
+      "i2c_dev": "/dev/i2c-5",
+      "scl_gpio": 54,
+      "sda_gpio": 55,
+      "i2c_addr": 40,
+      "demo_block": 4,
+      "irq_gpio": 71,
+      "reset_gpio": 70
+    },
+    "light_sensor": {
+      "name": "W1160:als0",
+      "i2c_dev": "/dev/i2c-6",
+      "scl_gpio": 56,
+      "sda_gpio": 57,
+      "i2c_addr": 72
+    },
+    "g_sensor": {
+      "name": "g-sensor",
+      "i2c_dev": "/dev/i2c-4",
+      "scl_gpio": 40,
+      "sda_gpio": 41,
+      "i2c_addr": 25,
+      "int1_gpio": 31
+    }
+  },
+  "gpio_inputs": [
+    {
+      "name": "touch_back",
+      "role": "back",
+      "chip_name": "gpiochip0",
+      "line_offset": 79,
+      "active_high": true
+    },
+    {
+      "name": "touch_head",
+      "role": "head",
+      "chip_name": "gpiochip0",
+      "line_offset": 77,
+      "active_high": true
+    },
+    {
+      "name": "touch_chin",
+      "role": "nose",
+      "chip_name": "gpiochip0",
+      "line_offset": 113,
+      "active_high": true
+    },
+    {
+      "name": "touch_belly",
+      "role": "foot",
+      "chip_name": "gpiochip0",
+      "line_offset": 126,
+      "active_high": true
+    },
+    {
+      "name": "touch_reserved",
+      "role": "reserved",
+      "chip_name": "gpiochip0",
+      "line_offset": 114,
+      "active_high": true
+    },
+    {
+      "name": "wake",
+      "role": "wake",
+      "chip_name": "gpiochip0",
+      "line_offset": 73,
+      "active_high": false
+    }
+  ],
+  "pm": {
+    "charger_node": "ip2317-charger",
+    "capacity_node": "cw-bat"
+  },
+  "fan": {
+    "gpio": 72,
+    "period": 100000,
+    "duty_cycle": 0
+  }
+}

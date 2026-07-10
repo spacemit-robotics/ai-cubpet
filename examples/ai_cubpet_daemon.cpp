@@ -1,5 +1,7 @@
 #include <nlohmann/json.hpp>
 
+#include "cubpet_daemon_config.hpp"
+
 #include <dirent.h>
 #include <fcntl.h>
 #include <glob.h>
@@ -34,81 +36,13 @@ using json = nlohmann::json;
 
 volatile sig_atomic_t g_should_stop = 0;
 
-struct AudioConfig {
-    int input = -1;
-    std::vector<std::string> input_device_hints = {"SPV Composite", "USB Audio"};
-    int output = -1;
-    std::vector<std::string> output_device_hints = {"SPV Composite", "USB Audio"};
-    int rate = 16000;
-    int channels = 4;
-    int speech_channel = 1;
-    int frames = 480;
-    int queue_chunks = 96;
-};
-
-struct VadConfig {
-    float threshold = 0.3f;
-    float stop_threshold = 0.2f;
-    int silence_ms = 500;
-    int pre_speech_ms = 500;
-    int max_utterance_sec = 8;
-};
-
-struct AgcConfig {
-    bool enabled = true;
-    float headroom_db = 6.0f;
-    float max_gain_db = 18.0f;
-    float initial_gain_db = 8.0f;
-};
-
-struct AsrConfig {
-    std::string provider = "spacemit";
-    std::string language = "zh";
-    std::string model_dir;
-    bool warmup = true;
-};
-
-struct DdsConfig {
-    bool enabled = true;
-    int domain_id = 0;
-};
-
-struct UiConfig {
-    bool enabled = true;
-    std::string user = "initer";
-    std::string qt_qpa_platform = "wayland";
-    std::string xdg_runtime_dir = "/run/user/996";
-    std::string wayland_display = "wayland-0";
-    std::string display = ":0";
-    std::string gif_dir;
-    std::string audio_dir;
-    std::map<std::string, std::string> extra_env = {
-        {"MESA_LOADER_DRIVER_OVERRIDE", "pvr"},
-        {"GST_GL_PLATFORM", "egl"},
-        {"COGL_DRIVER", "gles2"},
-        {"GDK_GL", "gles"},
-        {"SAL_DISABLEGL", "1"},
-    };
-};
-
-struct DebugConfig {
-    bool save_wav = false;
-    std::string save_wav_file = "~/.cache/ai-cubpet/asr_input.wav";
-    bool save_raw_wav = false;
-    std::string save_raw_wav_file = "~/.cache/ai-cubpet/raw_input.wav";
-};
-
-struct DaemonConfig {
-    AudioConfig audio;
-    VadConfig vad;
-    AgcConfig agc;
-    AsrConfig asr;
-    DdsConfig dds;
-    UiConfig ui;
-    DebugConfig debug;
-    std::string log_dir = "~/.cache/ai-cubpet/logs";
-    std::string pid_file = "~/.cache/ai-cubpet/ai_cubpet_daemon.pid";
-};
+using ai_cubpet::DaemonConfig;
+using ai_cubpet::DaemonConfigLoadOptions;
+using ai_cubpet::DefaultDaemonConfigPath;
+using ai_cubpet::LoadDaemonConfig;
+using ai_cubpet::LoadMergedDaemonConfigJson;
+using ai_cubpet::UiConfig;
+using ai_cubpet::WriteDefaultDaemonConfig;
 
 struct PidRecord {
     pid_t daemon_pid = -1;
@@ -184,201 +118,37 @@ bool DirectoryExists(const std::string& path) {
     return stat(path.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-template <typename T>
-void GetOpt(const json& j, const char* key, T& out) {  // NOLINT(runtime/references)
-    auto it = j.find(key);
-    if (it != j.end() && !it->is_null()) {
-        out = it->get<T>();
-    }
-}
-
-json DefaultJson() {
-    return json{
-        {"audio", {
-            {"input", -1},
-            {"input_device_hints", {"SPV Composite", "USB Audio"}},
-            {"output", -1},
-            {"output_device_hints", {"SPV Composite", "USB Audio"}},
-            {"rate", 16000},
-            {"channels", 4},
-            {"speech_channel", 1},
-            {"frames", 480},
-            {"queue_chunks", 96},
-        }},
-        {"vad", {
-            {"threshold", 0.3},
-            {"stop_threshold", 0.2},
-            {"silence_ms", 500},
-            {"pre_speech_ms", 500},
-            {"max_utterance_sec", 8},
-        }},
-        {"agc", {
-            {"enabled", true},
-            {"headroom_db", 6.0},
-            {"max_gain_db", 18.0},
-            {"initial_gain_db", 8.0},
-        }},
-        {"asr", {
-            {"provider", "spacemit"},
-            {"language", "zh"},
-            {"model_dir", nullptr},
-            {"warmup", true},
-        }},
-        {"dds", {
-            {"enabled", true},
-            {"domain_id", 0},
-        }},
-        {"ui", {
-            {"enabled", true},
-            {"user", "initer"},
-            {"qt_qpa_platform", "wayland"},
-            {"xdg_runtime_dir", "/run/user/996"},
-            {"wayland_display", "wayland-0"},
-            {"display", ":0"},
-            {"gif_dir", nullptr},
-            {"audio_dir", nullptr},
-            {"extra_env", {
-                {"MESA_LOADER_DRIVER_OVERRIDE", "pvr"},
-                {"GST_GL_PLATFORM", "egl"},
-                {"COGL_DRIVER", "gles2"},
-                {"GDK_GL", "gles"},
-                {"SAL_DISABLEGL", "1"},
-            }},
-        }},
-        {"debug", {
-            {"save_wav", false},
-            {"save_wav_file", "~/.cache/ai-cubpet/asr_input.wav"},
-            {"save_raw_wav", false},
-            {"save_raw_wav_file", "~/.cache/ai-cubpet/raw_input.wav"},
-        }},
-        {"log_dir", "~/.cache/ai-cubpet/logs"},
-        {"pid_file", "~/.cache/ai-cubpet/ai_cubpet_daemon.pid"},
-    };
-}
-
-std::string DefaultConfigDir() {
-    if (const char* xdg = std::getenv("XDG_CONFIG_HOME")) {
-        if (*xdg) {
-            return std::string(xdg) + "/ai-cubpet";
-        }
-    }
-    return HomeDir() + "/.config/ai-cubpet";
-}
+std::string SharePath(const std::string& subdir);
 
 std::string DefaultConfigPath() {
-    return DefaultConfigDir() + "/ai_cubpet.json";
+    return DefaultDaemonConfigPath();
 }
 
-void ParseConfigJson(const json& root, DaemonConfig& cfg) {  // NOLINT(runtime/references)
-    if (auto it = root.find("audio"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "input", cfg.audio.input);
-        GetOpt(*it, "input_device_hints", cfg.audio.input_device_hints);
-        GetOpt(*it, "output", cfg.audio.output);
-        GetOpt(*it, "output_device_hints", cfg.audio.output_device_hints);
-        GetOpt(*it, "rate", cfg.audio.rate);
-        GetOpt(*it, "channels", cfg.audio.channels);
-        GetOpt(*it, "speech_channel", cfg.audio.speech_channel);
-        GetOpt(*it, "frames", cfg.audio.frames);
-        GetOpt(*it, "queue_chunks", cfg.audio.queue_chunks);
-    }
-    if (auto it = root.find("vad"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "threshold", cfg.vad.threshold);
-        GetOpt(*it, "stop_threshold", cfg.vad.stop_threshold);
-        GetOpt(*it, "silence_ms", cfg.vad.silence_ms);
-        GetOpt(*it, "pre_speech_ms", cfg.vad.pre_speech_ms);
-        GetOpt(*it, "max_utterance_sec", cfg.vad.max_utterance_sec);
-    }
-    if (auto it = root.find("agc"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "enabled", cfg.agc.enabled);
-        GetOpt(*it, "headroom_db", cfg.agc.headroom_db);
-        GetOpt(*it, "max_gain_db", cfg.agc.max_gain_db);
-        GetOpt(*it, "initial_gain_db", cfg.agc.initial_gain_db);
-    }
-    if (auto it = root.find("asr"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "provider", cfg.asr.provider);
-        GetOpt(*it, "language", cfg.asr.language);
-        GetOpt(*it, "model_dir", cfg.asr.model_dir);
-        GetOpt(*it, "warmup", cfg.asr.warmup);
-    }
-    if (auto it = root.find("dds"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "enabled", cfg.dds.enabled);
-        GetOpt(*it, "domain_id", cfg.dds.domain_id);
-    }
-    if (auto it = root.find("ui"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "enabled", cfg.ui.enabled);
-        GetOpt(*it, "user", cfg.ui.user);
-        GetOpt(*it, "qt_qpa_platform", cfg.ui.qt_qpa_platform);
-        GetOpt(*it, "xdg_runtime_dir", cfg.ui.xdg_runtime_dir);
-        GetOpt(*it, "wayland_display", cfg.ui.wayland_display);
-        GetOpt(*it, "display", cfg.ui.display);
-        GetOpt(*it, "gif_dir", cfg.ui.gif_dir);
-        GetOpt(*it, "audio_dir", cfg.ui.audio_dir);
-        if (auto env = it->find("extra_env"); env != it->end() && env->is_object()) {
-            cfg.ui.extra_env.clear();
-            for (auto jt = env->begin(); jt != env->end(); ++jt) {
-                if (jt.value().is_string()) {
-                    cfg.ui.extra_env[jt.key()] = jt.value().get<std::string>();
-                }
-            }
-        }
-    }
-    if (auto it = root.find("debug"); it != root.end() && it->is_object()) {
-        GetOpt(*it, "save_wav", cfg.debug.save_wav);
-        GetOpt(*it, "save_wav_file", cfg.debug.save_wav_file);
-        GetOpt(*it, "save_raw_wav", cfg.debug.save_raw_wav);
-        GetOpt(*it, "save_raw_wav_file", cfg.debug.save_raw_wav_file);
-    }
-    GetOpt(root, "log_dir", cfg.log_dir);
-    GetOpt(root, "pid_file", cfg.pid_file);
+std::string DefaultDaemonConfigJsonPath() {
+    return SharePath("daemon/ai_cubpet.default.json");
+}
 
-    cfg.debug.save_wav_file = ExpandUser(cfg.debug.save_wav_file);
-    cfg.debug.save_raw_wav_file = ExpandUser(cfg.debug.save_raw_wav_file);
-    cfg.log_dir = ExpandUser(cfg.log_dir);
-    cfg.pid_file = ExpandUser(cfg.pid_file);
+std::string DaemonBoardConfigDir() {
+    return SharePath("daemon/boards");
+}
+
+DaemonConfigLoadOptions MakeConfigLoadOptions(const std::string& path) {
+    DaemonConfigLoadOptions options;
+    options.user_config_path = path;
+    options.default_config_path = DefaultDaemonConfigJsonPath();
+    options.board_config_dir = DaemonBoardConfigDir();
+    return options;
 }
 
 DaemonConfig LoadConfig(const std::string& path) {
-    DaemonConfig cfg;
-    std::ifstream in(path);
-    if (!in.good()) {
-        ParseConfigJson(DefaultJson(), cfg);
-        return cfg;
-    }
-    json root = json::parse(in, nullptr, true, true);
-    bool migrate_old_default_input = false;
-    if (auto it = root.find("audio"); it != root.end() && it->is_object()) {
-        const bool has_hints = it->find("input_device_hints") != it->end();
-        if (!has_hints) {
-            auto input_it = it->find("input");
-            if (input_it != it->end() && input_it->is_number_integer() &&
-                    input_it->get<int>() == 1) {
-                migrate_old_default_input = true;
-            }
-        }
-    }
-    json merged = DefaultJson();
-    merged.update(root, true);
-    ParseConfigJson(merged, cfg);
-    if (migrate_old_default_input) {
-        cfg.audio.input = -1;
-    }
-    return cfg;
+    return LoadDaemonConfig(MakeConfigLoadOptions(path));
 }
 
 bool WriteDefaultConfig(const std::string& path, bool overwrite) {
-    if (FileExists(path) && !overwrite) {
-        return true;
-    }
-    if (!MakeDirs(ParentDir(path))) {
+    if (!WriteDefaultDaemonConfig(path, overwrite, MakeConfigLoadOptions(path))) {
         std::cerr << "failed to create config dir: " << ParentDir(path) << "\n";
         return false;
     }
-    std::ofstream out(path, std::ios::trunc);
-    if (!out.good()) {
-        std::cerr << "failed to write config: " << path << "\n";
-        return false;
-    }
-    out << DefaultJson().dump(4) << "\n";
     return true;
 }
 
@@ -1946,12 +1716,7 @@ int main(int argc, char** argv) {
             return 0;
         }
         if (cmd == "config-show") {
-            json merged = DefaultJson();
-            std::ifstream in(config_path);
-            if (in.good()) {
-                json user = json::parse(in, nullptr, true, true);
-                merged.update(user, true);
-            }
+            json merged = LoadMergedDaemonConfigJson(MakeConfigLoadOptions(config_path));
             std::cout << merged.dump(4) << "\n";
             return 0;
         }
